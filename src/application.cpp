@@ -18,7 +18,6 @@ DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
 #include <framework/trackball.h>
-#include <framework/trackball.h>
 #include <array>
 #include <algorithm>
 #include <cstddef>
@@ -33,7 +32,6 @@ public:
     Application()
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
         , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
-        , m_trackball(&m_window, glm::radians(50.0f))
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
@@ -42,13 +40,6 @@ public:
                 onKeyReleased(key, mods);
         });
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
-
-        // Initialize the trackball
-        glm::vec3 look_at(0.0f, 0.0f, -1.0f);
-        glm::vec3 rotations(0.0f, 0.0f, 0.0f);
-        float dist = 2.0;
-        m_trackball.setCamera(look_at, rotations, dist);
-
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -131,8 +122,12 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
-                glUniform1i(m_defaultShader.getUniformLocation("enableLambert"), m_useLambert);
-                glUniform3fv(m_defaultShader.getUniformLocation("lambertDiffuseColor"), 1, glm::value_ptr(m_lambertDiffuseColor));
+                glUniform1i(m_defaultShader.getUniformLocation("shadingMode"), static_cast<int>(m_shadingModel));
+                glUniform3fv(m_defaultShader.getUniformLocation("customDiffuseColor"), 1, glm::value_ptr(m_customDiffuseColor));
+                glUniform3fv(m_defaultShader.getUniformLocation("viewPosition"), 1, glm::value_ptr(camera.position()));
+                glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
+                glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
+                glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
             }
@@ -149,7 +144,6 @@ public:
     void onKeyPressed(int key, int mods)
     {
         std::cout << "Key pressed: " << key << std::endl;
-        m_trackball.
     }
 
     // In here you can handle key releases
@@ -189,7 +183,6 @@ private:
     Shader m_defaultShader;
     Shader m_shadowShader;
 
-    Trackball m_trackball;
     Shader m_lightShader;
 
     struct Light {
@@ -204,11 +197,20 @@ private:
         GLuint textureId { 0 };
     };
 
+    enum class ShadingModel : int {
+        Unlit = 0,
+        Lambert = 1,
+        Phong = 2
+    };
+
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     bool m_useMaterial { true };
-    bool m_useLambert { true };
-    glm::vec3 m_lambertDiffuseColor { 0.8f, 0.4f, 0.2f };
+    ShadingModel m_shadingModel { ShadingModel::Lambert };
+    glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
+    glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
+    float m_specularStrength { 1.0f };
+    float m_specularShininess { 32.0f };
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
 
@@ -429,9 +431,15 @@ void Application::renderGui()
     storeActiveViewState();
 
     ImGui::Begin("Shading & Lighting");
-    ImGui::Checkbox("Enable Lambert shading", &m_useLambert);
+    static const char* shadingModes[] = { "Unlit", "Lambert", "Phong" };
+    int shadingIndex = static_cast<int>(m_shadingModel);
+    if (ImGui::Combo("Shading Model", &shadingIndex, shadingModes, IM_ARRAYSIZE(shadingModes)))
+        m_shadingModel = static_cast<ShadingModel>(shadingIndex);
     ImGui::Checkbox("Use material if no texture", &m_useMaterial);
-    ImGui::ColorEdit3("Diffuse colour", glm::value_ptr(m_lambertDiffuseColor));
+    ImGui::ColorEdit3("Custom diffuse colour", glm::value_ptr(m_customDiffuseColor));
+    ImGui::ColorEdit3("Specular colour", glm::value_ptr(m_specularColor));
+    ImGui::SliderFloat("Specular strength", &m_specularStrength, 0.0f, 5.0f);
+    ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
 
     ImGui::Separator();
     ImGui::Text("Viewpoints");
