@@ -11,6 +11,17 @@ layout(std140) uniform Material // Must match the GPUMaterial defined in src/mes
 uniform sampler2D colorMap;
 uniform bool hasTexCoords;
 uniform bool useMaterial;
+uniform bool enableLambert;
+uniform vec3 lambertDiffuseColor;
+
+const int MAX_LIGHTS = 8;
+uniform int numLights;
+uniform vec3 lightPositions[MAX_LIGHTS];
+uniform vec3 lightColors[MAX_LIGHTS];
+uniform int lightIsSpotlight[MAX_LIGHTS];
+uniform vec3 lightDirections[MAX_LIGHTS];
+uniform float lightSpotCosCutoff[MAX_LIGHTS];
+uniform float lightSpotSoftness[MAX_LIGHTS];
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -22,8 +33,31 @@ void main()
 {
     vec3 normal = normalize(fragNormal);
 
+    vec3 baseColor;
+    if (hasTexCoords)
+        baseColor = texture(colorMap, fragTexCoord).rgb;
+    else if (useMaterial)
+        baseColor = kd;
+    else
+        baseColor = enableLambert ? lambertDiffuseColor : normal;
 
-    if (hasTexCoords)       { fragColor = vec4(texture(colorMap, fragTexCoord).rgb, 1);}
-    else if (useMaterial)   { fragColor = vec4(kd, 1);}
-    else                    { fragColor = vec4(normal, 1); } // Output color value, change from (1, 0, 0) to something else
+    if (enableLambert && numLights > 0) {
+        vec3 lambertSum = vec3(0);
+        int lightCount = min(numLights, MAX_LIGHTS);
+        for (int i = 0; i < lightCount; ++i) {
+            vec3 lightDir = normalize(lightPositions[i] - fragPosition);
+            float diff = max(dot(normal, lightDir), 0.0);
+
+            float spotFactor = 1.0;
+            if (lightIsSpotlight[i] != 0) {
+                float c = dot(-lightDir, normalize(lightDirections[i]));
+                spotFactor = smoothstep(lightSpotCosCutoff[i], lightSpotCosCutoff[i] + lightSpotSoftness[i], c);
+            }
+
+            lambertSum += baseColor * diff * lightColors[i] * spotFactor;
+        }
+        fragColor = vec4(lambertSum, 1);
+    } else {
+        fragColor = vec4(baseColor, 1);
+    }
 }

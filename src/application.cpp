@@ -17,8 +17,12 @@ DISABLE_WARNINGS_PUSH()
 DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
+#include <array>
+#include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <iostream>
+#include <string>
 #include <vector>
 
 class Application {
@@ -62,22 +66,18 @@ public:
         } catch (ShaderLoadingException e) {
             std::cerr << e.what() << std::endl;
         }
+
+        resetLights();
     }
 
     void update()
     {
-        int dummyInteger = 0; // Initialized to 0
         while (!m_window.shouldClose()) {
             // This is your game loop
             // Put your real-time logic and rendering in here
             m_window.updateInput();
 
-            // Use ImGui for easy input/output of ints, floats, strings, etc...
-            ImGui::Begin("Window");
-            ImGui::InputInt("This is an integer input", &dummyInteger); // Use ImGui::DragInt or ImGui::DragFloat for larger range of numbers.
-            ImGui::Text("Value is: %i", dummyInteger); // Use C printf formatting rules (%i is a signed integer)
-            ImGui::Checkbox("Use material if no texture", &m_useMaterial);
-            ImGui::End();
+            renderGui();
 
             // Clear the screen
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
@@ -94,8 +94,7 @@ public:
             for (GPUMesh& mesh : m_meshes) {
                 m_defaultShader.bind();
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
-                //Uncomment this line when you use the modelMatrix (or fragmentPosition)
-                //glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
+                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
                 if (mesh.hasTextureCoords()) {
                     m_texture.bind(GL_TEXTURE0);
@@ -106,6 +105,9 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
+                glUniform1i(m_defaultShader.getUniformLocation("enableLambert"), m_useLambert);
+                glUniform3fv(m_defaultShader.getUniformLocation("lambertDiffuseColor"), 1, glm::value_ptr(m_lambertDiffuseColor));
+                uploadLightsToShader();
                 mesh.draw(m_defaultShader);
             }
 
@@ -159,15 +161,187 @@ private:
     Shader m_defaultShader;
     Shader m_shadowShader;
 
+    struct Light {
+        glm::vec3 position { 0.0f, 0.0f, 3.0f };
+        glm::vec3 color { 1.0f };
+        bool isSpotlight { false };
+        bool peelsDepth { false };
+        glm::vec3 direction { 0.0f, -1.0f, 0.0f };
+        float spotCosCutoff { 0.9f };
+        float spotSoftness { 0.1f };
+        bool hasTexture { false };
+        GLuint textureId { 0 };
+    };
+
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     bool m_useMaterial { true };
+    bool m_useLambert { true };
+    glm::vec3 m_lambertDiffuseColor { 0.8f, 0.4f, 0.2f };
+    std::vector<Light> m_lights;
+    size_t m_selectedLightIndex { 0 };
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
     glm::mat4 m_viewMatrix = glm::lookAt(glm::vec3(-1, 1, -1), glm::vec3(0), glm::vec3(0, 1, 0));
     glm::mat4 m_modelMatrix { 1.0f };
+
+    void resetLights();
+    void selectNextLight();
+    void selectPreviousLight();
+    void renderGui();
+    void uploadLightsToShader();
 };
+
+void Application::resetLights()
+{
+    m_lights.clear();
+    m_lights.emplace_back();
+    m_lights.back().position = glm::vec3(0.0f, 0.0f, 3.0f);
+    m_lights.back().color = glm::vec3(1.0f);
+    m_selectedLightIndex = 0;
+}
+
+void Application::selectNextLight()
+{
+    if (m_lights.empty())
+        return;
+    m_selectedLightIndex = (m_selectedLightIndex + 1) % m_lights.size();
+}
+
+void Application::selectPreviousLight()
+{
+    if (m_lights.empty())
+        return;
+    if (m_selectedLightIndex == 0)
+        m_selectedLightIndex = m_lights.size() - 1;
+    else
+        --m_selectedLightIndex;
+}
+
+void Application::renderGui()
+{
+    ImGui::Begin("Shading & Lighting");
+    ImGui::Checkbox("Enable Lambert shading", &m_useLambert);
+    ImGui::Checkbox("Use material if no texture", &m_useMaterial);
+    ImGui::ColorEdit3("Diffuse colour", glm::value_ptr(m_lambertDiffuseColor));
+
+    ImGui::Separator();
+    ImGui::Text("Lights");
+
+    if (ImGui::Button("Add Light")) {
+        m_lights.emplace_back();
+        m_selectedLightIndex = m_lights.size() - 1;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Lights")) {
+        resetLights();
+    }
+
+    if (!m_lights.empty()) {
+        if (m_selectedLightIndex >= m_lights.size())
+            m_selectedLightIndex = m_lights.size() - 1;
+
+        if (ImGui::BeginListBox("Light List")) {
+            for (size_t i = 0; i < m_lights.size(); ++i) {
+                const bool isSelected = (i == m_selectedLightIndex);
+                const std::string label = "Light " + std::to_string(i);
+                if (ImGui::Selectable(label.c_str(), isSelected))
+                    m_selectedLightIndex = i;
+                if (isSelected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndListBox();
+        }
+
+        if (ImGui::Button("Previous Light")) {
+            selectPreviousLight();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Next Light")) {
+            selectNextLight();
+        }
+
+        bool canRemove = m_lights.size() > 1;
+        if (!canRemove)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Remove Selected Light")) {
+            m_lights.erase(m_lights.begin() + static_cast<std::ptrdiff_t>(m_selectedLightIndex));
+            if (m_lights.empty())
+                m_selectedLightIndex = 0;
+            else if (m_selectedLightIndex >= m_lights.size())
+                m_selectedLightIndex = m_lights.size() - 1;
+        }
+        if (!canRemove)
+            ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::Text("Selected Light Properties");
+        Light& selectedLight = m_lights[m_selectedLightIndex];
+        ImGui::DragFloat3("Position", glm::value_ptr(selectedLight.position), 0.05f);
+        ImGui::ColorEdit3("Color", glm::value_ptr(selectedLight.color));
+        ImGui::Checkbox("Peels Depth", &selectedLight.peelsDepth);
+
+        ImGui::Separator();
+        ImGui::Text("Spotlight Settings");
+        ImGui::Checkbox("Is Spotlight", &selectedLight.isSpotlight);
+        ImGui::DragFloat3("Direction", glm::value_ptr(selectedLight.direction), 0.01f, -1.0f, 1.0f, "%.3f");
+        if (ImGui::Button("Normalise Direction")) {
+            const float len = glm::length(selectedLight.direction);
+            if (len > 1e-4f)
+                selectedLight.direction /= len;
+        }
+        ImGui::SliderFloat("Spot Cos Cutoff", &selectedLight.spotCosCutoff, 0.0f, 1.0f);
+        ImGui::SliderFloat("Spot Softness", &selectedLight.spotSoftness, 0.0f, 1.0f);
+    }
+
+    ImGui::End();
+}
+
+void Application::uploadLightsToShader()
+{
+    constexpr int MAX_LIGHTS = 8;
+    using Vec3Array = std::array<glm::vec3, MAX_LIGHTS>;
+    using FloatArray = std::array<float, MAX_LIGHTS>;
+    using IntArray = std::array<int, MAX_LIGHTS>;
+
+    Vec3Array positions {};
+    Vec3Array colors {};
+    Vec3Array directions {};
+    FloatArray cosCutoff {};
+    FloatArray softness {};
+    IntArray spotFlags {};
+
+    const int count = static_cast<int>(std::min(m_lights.size(), static_cast<size_t>(MAX_LIGHTS)));
+
+    for (int i = 0; i < count; ++i) {
+        const Light& light = m_lights[i];
+        positions[i] = light.position;
+        colors[i] = light.color;
+        glm::vec3 dir = light.direction;
+        const float len = glm::length(dir);
+        if (len > 1e-4f)
+            dir /= len;
+        else
+            dir = glm::vec3(0.0f, -1.0f, 0.0f);
+        directions[i] = dir;
+        cosCutoff[i] = glm::clamp(light.spotCosCutoff, 0.0f, 1.0f);
+        softness[i] = glm::clamp(light.spotSoftness, 0.0f, 1.0f);
+        spotFlags[i] = light.isSpotlight ? 1 : 0;
+    }
+
+    glUniform1i(m_defaultShader.getUniformLocation("numLights"), count);
+
+    if (count == 0)
+        return;
+
+    glUniform3fv(m_defaultShader.getUniformLocation("lightPositions"), count, glm::value_ptr(positions[0]));
+    glUniform3fv(m_defaultShader.getUniformLocation("lightColors"), count, glm::value_ptr(colors[0]));
+    glUniform1iv(m_defaultShader.getUniformLocation("lightIsSpotlight"), count, spotFlags.data());
+    glUniform3fv(m_defaultShader.getUniformLocation("lightDirections"), count, glm::value_ptr(directions[0]));
+    glUniform1fv(m_defaultShader.getUniformLocation("lightSpotCosCutoff"), count, cosCutoff.data());
+    glUniform1fv(m_defaultShader.getUniformLocation("lightSpotSoftness"), count, softness.data());
+}
 
 int main()
 {
