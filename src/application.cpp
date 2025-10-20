@@ -17,12 +17,14 @@ DISABLE_WARNINGS_PUSH()
 DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
+#include <framework/trackball.h>
 #include <array>
 #include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <iostream>
 #include <string>
+#include <memory>
 #include <vector>
 
 class Application {
@@ -37,14 +39,6 @@ public:
             else if (action == GLFW_RELEASE)
                 onKeyReleased(key, mods);
         });
-        m_window.registerMouseMoveCallback(std::bind(&Application::onMouseMove, this, std::placeholders::_1));
-        m_window.registerMouseButtonCallback([this](int button, int action, int mods) {
-            if (action == GLFW_PRESS)
-                onMouseClicked(button, mods);
-            else if (action == GLFW_RELEASE)
-                onMouseReleased(button, mods);
-        });
-
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
         try {
@@ -67,6 +61,7 @@ public:
             std::cerr << e.what() << std::endl;
         }
 
+        initializeViews();
         resetLights();
     }
 
@@ -86,6 +81,15 @@ public:
             // ...
             glEnable(GL_DEPTH_TEST);
 
+            Trackball& camera = activeTrackball();
+            if (!m_views.empty()) {
+                Viewpoint& viewState = m_views[m_activeViewIndex];
+                viewState.lookAt = camera.lookAt();
+                viewState.rotations = camera.rotationEulerAngles();
+                viewState.distance = camera.distanceFromLookAt();
+            }
+            m_viewMatrix = camera.viewMatrix();
+            m_projectionMatrix = camera.projectionMatrix();
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
             // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
             // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
@@ -181,17 +185,88 @@ private:
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
 
+    struct Viewpoint {
+        std::string name;
+        glm::vec3 lookAt { 0.0f };
+        glm::vec3 rotations { 0.0f };
+        float distance { 5.0f };
+        glm::vec3 defaultLookAt { 0.0f };
+        glm::vec3 defaultRotations { 0.0f };
+        float defaultDistance { 5.0f };
+    };
+    std::vector<Viewpoint> m_views;
+    size_t m_activeViewIndex { 0 };
+    std::unique_ptr<Trackball> m_trackball;
+
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
     glm::mat4 m_viewMatrix = glm::lookAt(glm::vec3(-1, 1, -1), glm::vec3(0), glm::vec3(0, 1, 0));
     glm::mat4 m_modelMatrix { 1.0f };
 
+    void initializeViews();
+    Trackball& activeTrackball();
+    void resetActiveView();
+    void storeActiveViewState();
     void resetLights();
     void selectNextLight();
     void selectPreviousLight();
     void renderGui();
     void uploadLightsToShader();
 };
+
+void Application::initializeViews()
+{
+    m_views.clear();
+
+    Viewpoint mainView;
+    mainView.name = "Main View";
+    mainView.defaultLookAt = glm::vec3(0.0f);
+    mainView.defaultRotations = glm::vec3(glm::radians(20.0f), glm::radians(-30.0f), 0.0f);
+    mainView.defaultDistance = 5.0f;
+    mainView.lookAt = mainView.defaultLookAt;
+    mainView.rotations = mainView.defaultRotations;
+    mainView.distance = mainView.defaultDistance;
+
+    m_views.push_back(std::move(mainView));
+    m_activeViewIndex = 0;
+
+    m_trackball = std::make_unique<Trackball>(&m_window, glm::radians(80.0f), m_views[0].lookAt, m_views[0].distance, m_views[0].rotations.x, m_views[0].rotations.y);
+    m_trackball->setCamera(m_views[0].lookAt, m_views[0].rotations, m_views[0].distance);
+}
+
+Trackball& Application::activeTrackball()
+{
+    if (m_views.empty() || !m_trackball)
+        initializeViews();
+
+    if (m_activeViewIndex >= m_views.size())
+        m_activeViewIndex = m_views.size() - 1;
+
+    return *m_trackball;
+}
+
+void Application::resetActiveView()
+{
+    if (m_views.empty() || !m_trackball)
+        return;
+
+    Viewpoint& view = m_views[m_activeViewIndex];
+    view.lookAt = view.defaultLookAt;
+    view.rotations = view.defaultRotations;
+    view.distance = view.defaultDistance;
+    m_trackball->setCamera(view.lookAt, view.rotations, view.distance);
+}
+
+void Application::storeActiveViewState()
+{
+    if (m_views.empty() || !m_trackball)
+        return;
+
+    Viewpoint& view = m_views[m_activeViewIndex];
+    view.lookAt = m_trackball->lookAt();
+    view.rotations = m_trackball->rotationEulerAngles();
+    view.distance = m_trackball->distanceFromLookAt();
+}
 
 void Application::resetLights()
 {
@@ -221,10 +296,73 @@ void Application::selectPreviousLight()
 
 void Application::renderGui()
 {
+    activeTrackball();
+    storeActiveViewState();
+
     ImGui::Begin("Shading & Lighting");
     ImGui::Checkbox("Enable Lambert shading", &m_useLambert);
     ImGui::Checkbox("Use material if no texture", &m_useMaterial);
     ImGui::ColorEdit3("Diffuse colour", glm::value_ptr(m_lambertDiffuseColor));
+
+    ImGui::Separator();
+    ImGui::Text("Viewpoints");
+
+    if (ImGui::Button("Add View")) {
+        Trackball& currentCamera = activeTrackball();
+        Viewpoint view;
+        view.name = "View " + std::to_string(m_views.size());
+        view.lookAt = currentCamera.lookAt();
+        view.rotations = currentCamera.rotationEulerAngles();
+        view.distance = currentCamera.distanceFromLookAt();
+        view.defaultLookAt = view.lookAt;
+        view.defaultRotations = view.rotations;
+        view.defaultDistance = view.distance;
+        m_views.push_back(std::move(view));
+        m_activeViewIndex = m_views.size() - 1;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset View")) {
+        resetActiveView();
+    }
+    ImGui::SameLine();
+    const bool canRemoveView = m_views.size() > 1;
+    if (!canRemoveView)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Remove View")) {
+        m_views.erase(m_views.begin() + static_cast<std::ptrdiff_t>(m_activeViewIndex));
+        if (m_views.empty()) {
+            initializeViews();
+        } else {
+            m_activeViewIndex = std::min(m_activeViewIndex, m_views.size() - 1);
+            const Viewpoint& selected = m_views[m_activeViewIndex];
+            m_trackball->setCamera(selected.lookAt, selected.rotations, selected.distance);
+        }
+    }
+    if (!canRemoveView)
+        ImGui::EndDisabled();
+
+    if (ImGui::BeginListBox("Active View")) {
+        for (size_t i = 0; i < m_views.size(); ++i) {
+            const bool isSelected = (i == m_activeViewIndex);
+            if (ImGui::Selectable(m_views[i].name.c_str(), isSelected)) {
+                m_activeViewIndex = i;
+                const Viewpoint& selected = m_views[m_activeViewIndex];
+                m_trackball->setCamera(selected.lookAt, selected.rotations, selected.distance);
+            }
+            if (isSelected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndListBox();
+    }
+
+    {
+        Trackball& cam = activeTrackball();
+        const glm::vec3 rot = cam.rotationEulerAngles();
+        ImGui::Text("LookAt: (%.2f, %.2f, %.2f)", cam.lookAt().x, cam.lookAt().y, cam.lookAt().z);
+        ImGui::Text("Distance: %.2f", cam.distanceFromLookAt());
+        ImGui::Text("Rotation: (%.1f, %.1f)", glm::degrees(rot.x), glm::degrees(rot.y));
+        ImGui::TextUnformatted("Controls: LMB orbit, RMB pan, scroll zoom.");
+    }
 
     ImGui::Separator();
     ImGui::Text("Lights");
