@@ -52,6 +52,11 @@ public:
             shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
+            ShaderBuilder lightBuilder;
+            lightBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/light_marker_vert.glsl");
+            lightBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/light_marker_frag.glsl");
+            m_lightShader = lightBuilder.build();
+
             // Any new shaders can be added below in similar fashion.
             // ==> Don't forget to reconfigure CMake when you do!
             //     Visual Studio: PROJECT => Generate Cache for ComputerGraphics
@@ -62,7 +67,16 @@ public:
         }
 
         initializeViews();
+        initializeLightGeometry();
         resetLights();
+    }
+
+    ~Application()
+    {
+        if (m_lightVbo != 0)
+            glDeleteBuffers(1, &m_lightVbo);
+        if (m_lightVao != 0)
+            glDeleteVertexArrays(1, &m_lightVao);
     }
 
     void update()
@@ -116,6 +130,7 @@ public:
             }
 
             // Processes input and swaps the window buffer
+            renderLightMarkers();
             m_window.swapBuffers();
         }
     }
@@ -164,6 +179,7 @@ private:
     // Shader for default rendering and for depth rendering
     Shader m_defaultShader;
     Shader m_shadowShader;
+    Shader m_lightShader;
 
     struct Light {
         glm::vec3 position { 0.0f, 0.0f, 3.0f };
@@ -197,6 +213,10 @@ private:
     std::vector<Viewpoint> m_views;
     size_t m_activeViewIndex { 0 };
     std::unique_ptr<Trackball> m_trackball;
+    GLuint m_lightVao { 0 };
+    GLuint m_lightVbo { 0 };
+    GLsizei m_lightVertexCount { 0 };
+    float m_lightMarkerScale { 0.1f };
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
@@ -207,6 +227,8 @@ private:
     Trackball& activeTrackball();
     void resetActiveView();
     void storeActiveViewState();
+    void initializeLightGeometry();
+    void renderLightMarkers();
     void resetLights();
     void selectNextLight();
     void selectPreviousLight();
@@ -266,6 +288,102 @@ void Application::storeActiveViewState()
     view.lookAt = m_trackball->lookAt();
     view.rotations = m_trackball->rotationEulerAngles();
     view.distance = m_trackball->distanceFromLookAt();
+}
+
+void Application::initializeLightGeometry()
+{
+    if (m_lightVbo != 0)
+        glDeleteBuffers(1, &m_lightVbo);
+    if (m_lightVao != 0)
+        glDeleteVertexArrays(1, &m_lightVao);
+
+    const std::array<glm::vec3, 36> cubeVertices = {
+        // Front face
+        glm::vec3(-0.5f, -0.5f, 0.5f),
+        glm::vec3(0.5f, -0.5f, 0.5f),
+        glm::vec3(0.5f, 0.5f, 0.5f),
+        glm::vec3(0.5f, 0.5f, 0.5f),
+        glm::vec3(-0.5f, 0.5f, 0.5f),
+        glm::vec3(-0.5f, -0.5f, 0.5f),
+        // Back face
+        glm::vec3(-0.5f, -0.5f, -0.5f),
+        glm::vec3(-0.5f, 0.5f, -0.5f),
+        glm::vec3(0.5f, 0.5f, -0.5f),
+        glm::vec3(0.5f, 0.5f, -0.5f),
+        glm::vec3(0.5f, -0.5f, -0.5f),
+        glm::vec3(-0.5f, -0.5f, -0.5f),
+        // Left face
+        glm::vec3(-0.5f, -0.5f, -0.5f),
+        glm::vec3(-0.5f, -0.5f, 0.5f),
+        glm::vec3(-0.5f, 0.5f, 0.5f),
+        glm::vec3(-0.5f, 0.5f, 0.5f),
+        glm::vec3(-0.5f, 0.5f, -0.5f),
+        glm::vec3(-0.5f, -0.5f, -0.5f),
+        // Right face
+        glm::vec3(0.5f, -0.5f, -0.5f),
+        glm::vec3(0.5f, 0.5f, -0.5f),
+        glm::vec3(0.5f, 0.5f, 0.5f),
+        glm::vec3(0.5f, 0.5f, 0.5f),
+        glm::vec3(0.5f, -0.5f, 0.5f),
+        glm::vec3(0.5f, -0.5f, -0.5f),
+        // Top face
+        glm::vec3(-0.5f, 0.5f, 0.5f),
+        glm::vec3(0.5f, 0.5f, 0.5f),
+        glm::vec3(0.5f, 0.5f, -0.5f),
+        glm::vec3(0.5f, 0.5f, -0.5f),
+        glm::vec3(-0.5f, 0.5f, -0.5f),
+        glm::vec3(-0.5f, 0.5f, 0.5f),
+        // Bottom face
+        glm::vec3(-0.5f, -0.5f, 0.5f),
+        glm::vec3(-0.5f, -0.5f, -0.5f),
+        glm::vec3(0.5f, -0.5f, -0.5f),
+        glm::vec3(0.5f, -0.5f, -0.5f),
+        glm::vec3(0.5f, -0.5f, 0.5f),
+        glm::vec3(-0.5f, -0.5f, 0.5f)
+    };
+
+    m_lightVertexCount = static_cast<GLsizei>(cubeVertices.size());
+
+    glGenVertexArrays(1, &m_lightVao);
+    glGenBuffers(1, &m_lightVbo);
+
+    glBindVertexArray(m_lightVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lightVbo);
+    glBufferData(GL_ARRAY_BUFFER, cubeVertices.size() * sizeof(glm::vec3), cubeVertices.data(), GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void*>(0));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void Application::renderLightMarkers()
+{
+    if (m_lights.empty() || m_lightVao == 0)
+        return;
+
+    m_lightShader.bind();
+    glBindVertexArray(m_lightVao);
+
+    const GLint mvpLocation = m_lightShader.getUniformLocation("mvpMatrix");
+    const GLint colorLocation = m_lightShader.getUniformLocation("markerColor");
+
+    for (size_t i = 0; i < m_lights.size(); ++i) {
+        const Light& light = m_lights[i];
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), light.position);
+        model = glm::scale(model, glm::vec3(m_lightMarkerScale));
+        const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
+
+        glm::vec3 color = (i == m_selectedLightIndex) ? glm::vec3(1.0f, 0.8f, 0.0f) : glm::vec3(1.0f, 1.0f, 0.0f);
+
+        glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3fv(colorLocation, 1, glm::value_ptr(color));
+        glDrawArrays(GL_TRIANGLES, 0, m_lightVertexCount);
+    }
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 void Application::resetLights()
@@ -368,7 +486,17 @@ void Application::renderGui()
     ImGui::Text("Lights");
 
     if (ImGui::Button("Add Light")) {
-        m_lights.emplace_back();
+        Light newLight;
+        Trackball& cam = activeTrackball();
+        newLight.position = cam.position();
+        newLight.color = glm::vec3(1.0f);
+        const glm::vec3 toOrigin = -newLight.position;
+        const float len = glm::length(toOrigin);
+        if (len > 1e-6f)
+            newLight.direction = toOrigin / len;
+        else
+            newLight.direction = glm::vec3(0.0f, -1.0f, 0.0f);
+        m_lights.push_back(newLight);
         m_selectedLightIndex = m_lights.size() - 1;
     }
     ImGui::SameLine();
