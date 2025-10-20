@@ -18,6 +18,7 @@ DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
 #include <framework/trackball.h>
+#include <framework/trackball.h>
 #include <array>
 #include <algorithm>
 #include <cstddef>
@@ -32,6 +33,7 @@ public:
     Application()
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
         , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
+        , m_trackball(&m_window, glm::radians(50.0f))
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
@@ -40,6 +42,12 @@ public:
                 onKeyReleased(key, mods);
         });
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
+
+        // Initialize the trackball
+        glm::vec3 look_at(0.0f, 0.0f, -1.0f);
+        glm::vec3 rotations(0.0f, 0.0f, 0.0f);
+        float dist = 2.0;
+        m_trackball.setCamera(look_at, rotations, dist);
 
         try {
             ShaderBuilder defaultBuilder;
@@ -141,6 +149,7 @@ public:
     void onKeyPressed(int key, int mods)
     {
         std::cout << "Key pressed: " << key << std::endl;
+        m_trackball.
     }
 
     // In here you can handle key releases
@@ -179,6 +188,8 @@ private:
     // Shader for default rendering and for depth rendering
     Shader m_defaultShader;
     Shader m_shadowShader;
+
+    Trackball m_trackball;
     Shader m_lightShader;
 
     struct Light {
