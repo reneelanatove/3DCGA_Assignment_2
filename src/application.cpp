@@ -20,6 +20,7 @@ DISABLE_WARNINGS_POP()
 #include <framework/trackball.h>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <iostream>
@@ -68,6 +69,8 @@ public:
         initializeViews();
         initializeLightGeometry();
         resetLights();
+        initializeLightPath();
+        m_lastFrameTime = glfwGetTime();
     }
 
     ~Application()
@@ -76,6 +79,10 @@ public:
             glDeleteBuffers(1, &m_lightVbo);
         if (m_lightVao != 0)
             glDeleteVertexArrays(1, &m_lightVao);
+        if (m_lightPathVbo != 0)
+            glDeleteBuffers(1, &m_lightPathVbo);
+        if (m_lightPathVao != 0)
+            glDeleteVertexArrays(1, &m_lightPathVao);
     }
 
     void update()
@@ -84,6 +91,12 @@ public:
             // This is your game loop
             // Put your real-time logic and rendering in here
             m_window.updateInput();
+
+            const double currentTime = glfwGetTime();
+            float deltaTime = static_cast<float>(currentTime - m_lastFrameTime);
+            m_lastFrameTime = currentTime;
+
+            updateLightPath(deltaTime);
 
             renderGui();
 
@@ -133,6 +146,7 @@ public:
             }
 
             // Processes input and swaps the window buffer
+            renderLightPath();
             renderLightMarkers();
             m_window.swapBuffers();
         }
@@ -197,6 +211,19 @@ private:
         GLuint textureId { 0 };
     };
 
+    struct BezierSegment {
+        glm::vec3 p0;
+        glm::vec3 p1;
+        glm::vec3 p2;
+        glm::vec3 p3;
+    };
+
+    struct PathSample {
+        glm::vec3 position;
+        glm::vec3 tangent;
+        float cumulativeLength;
+    };
+
     enum class ShadingModel : int {
         Unlit = 0,
         Lambert = 1,
@@ -230,6 +257,20 @@ private:
     GLuint m_lightVbo { 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
+    std::vector<BezierSegment> m_lightPathSegments;
+    std::vector<PathSample> m_lightPathSamples;
+    float m_lightPathTotalLength { 0.0f };
+    bool m_lightPathEnabled { false };
+    bool m_lightPathShowCurve { false };
+    bool m_lightPathAimAtTarget { true };
+    glm::vec3 m_lightPathTarget { 0.0f, 1.0f, 0.0f };
+    float m_lightPathSpeed { 0.6f };
+    float m_lightPathDistance { 0.0f };
+    int m_lightPathFollowerIndex { 0 };
+    GLuint m_lightPathVao { 0 };
+    GLuint m_lightPathVbo { 0 };
+    GLsizei m_lightPathVertexCount { 0 };
+    double m_lastFrameTime { 0.0 };
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
@@ -242,6 +283,14 @@ private:
     void storeActiveViewState();
     void initializeLightGeometry();
     void renderLightMarkers();
+    void initializeLightPath();
+    void rebuildLightPathSamples();
+    void uploadLightPathGeometry();
+    glm::vec3 evaluateBezier(const BezierSegment& segment, float t) const;
+    glm::vec3 evaluateBezierTangent(const BezierSegment& segment, float t) const;
+    void updateLightPath(float deltaTime);
+    void renderLightPath();
+    void ensureLightPathFollowerValid();
     void resetLights();
     void selectNextLight();
     void selectPreviousLight();
@@ -371,6 +420,213 @@ void Application::initializeLightGeometry()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+glm::vec3 Application::evaluateBezier(const BezierSegment& segment, float t) const
+{
+    float u = 1.0f - t;
+    float u2 = u * u;
+    float t2 = t * t;
+    float u3 = u2 * u;
+    float t3 = t2 * t;
+    return u3 * segment.p0 + 3.0f * u2 * t * segment.p1 + 3.0f * u * t2 * segment.p2 + t3 * segment.p3;
+}
+
+glm::vec3 Application::evaluateBezierTangent(const BezierSegment& segment, float t) const
+{
+    float u = 1.0f - t;
+    // Derivative of cubic Bezier
+    glm::vec3 derivative = 3.0f * u * u * (segment.p1 - segment.p0)
+        + 6.0f * u * t * (segment.p2 - segment.p1)
+        + 3.0f * t * t * (segment.p3 - segment.p2);
+    if (glm::dot(derivative, derivative) < 1e-6f)
+        derivative = glm::vec3(0.0f, 1.0f, 0.0f);
+    return derivative;
+}
+
+void Application::initializeLightPath()
+{
+    m_lightPathSegments.clear();
+    m_lightPathSegments.push_back(BezierSegment {
+        glm::vec3(2.5f, 1.5f, -1.5f),
+        glm::vec3(3.5f, 2.5f, -0.5f),
+        glm::vec3(2.5f, 1.0f, 1.5f),
+        glm::vec3(1.5f, 1.5f, 2.5f) });
+    m_lightPathSegments.push_back(BezierSegment {
+        glm::vec3(1.5f, 1.5f, 2.5f),
+        glm::vec3(0.5f, 2.5f, 3.5f),
+        glm::vec3(-1.5f, 1.0f, 2.5f),
+        glm::vec3(-2.5f, 1.5f, 0.0f) });
+    m_lightPathSegments.push_back(BezierSegment {
+        glm::vec3(-2.5f, 1.5f, 0.0f),
+        glm::vec3(-3.0f, 0.5f, -2.0f),
+        glm::vec3(-0.5f, 1.0f, -3.0f),
+        glm::vec3(2.5f, 1.5f, -1.5f) });
+
+    rebuildLightPathSamples();
+    uploadLightPathGeometry();
+    if (!m_lights.empty() && !m_lightPathSamples.empty()) {
+        m_lights.front().position = m_lightPathSamples.front().position;
+        if (m_lightPathAimAtTarget) {
+            glm::vec3 toTarget = m_lightPathTarget - m_lights.front().position;
+            if (glm::dot(toTarget, toTarget) > 1e-6f)
+                m_lights.front().direction = glm::normalize(toTarget);
+        }
+    }
+}
+
+void Application::rebuildLightPathSamples()
+{
+    m_lightPathSamples.clear();
+    m_lightPathTotalLength = 0.0f;
+    if (m_lightPathSegments.empty())
+        return;
+
+    const int samplesPerSegment = 64;
+    glm::vec3 previousPosition { 0.0f };
+    bool hasPrevious = false;
+
+    for (size_t segmentIndex = 0; segmentIndex < m_lightPathSegments.size(); ++segmentIndex) {
+        const BezierSegment& segment = m_lightPathSegments[segmentIndex];
+        for (int i = 0; i <= samplesPerSegment; ++i) {
+            if (segmentIndex > 0 && i == 0)
+                continue;
+            float t = static_cast<float>(i) / static_cast<float>(samplesPerSegment);
+            glm::vec3 position = evaluateBezier(segment, t);
+            glm::vec3 tangent = glm::normalize(evaluateBezierTangent(segment, t));
+            if (hasPrevious)
+                m_lightPathTotalLength += glm::length(position - previousPosition);
+            else
+                hasPrevious = true;
+
+            m_lightPathSamples.push_back({ position, tangent, m_lightPathTotalLength });
+            previousPosition = position;
+        }
+    }
+
+    if (!m_lightPathSamples.empty()) {
+        // Ensure loop closure
+        m_lightPathTotalLength += glm::length(m_lightPathSamples.front().position - m_lightPathSamples.back().position);
+        m_lightPathSamples.push_back({ m_lightPathSamples.front().position, m_lightPathSamples.front().tangent, m_lightPathTotalLength });
+    }
+
+    if (m_lightPathTotalLength > 0.0f) {
+        m_lightPathDistance = std::fmod(m_lightPathDistance, m_lightPathTotalLength);
+        if (m_lightPathDistance < 0.0f)
+            m_lightPathDistance += m_lightPathTotalLength;
+    } else {
+        m_lightPathDistance = 0.0f;
+    }
+}
+
+void Application::uploadLightPathGeometry()
+{
+    if (m_lightPathSamples.size() < 2) {
+        m_lightPathVertexCount = 0;
+        return;
+    }
+
+    std::vector<glm::vec3> lineVertices;
+    lineVertices.reserve(m_lightPathSamples.size());
+    for (const PathSample& sample : m_lightPathSamples)
+        lineVertices.push_back(sample.position);
+
+    if (m_lightPathVao == 0)
+        glGenVertexArrays(1, &m_lightPathVao);
+    if (m_lightPathVbo == 0)
+        glGenBuffers(1, &m_lightPathVbo);
+
+    glBindVertexArray(m_lightPathVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lightPathVbo);
+    glBufferData(GL_ARRAY_BUFFER, lineVertices.size() * sizeof(glm::vec3), lineVertices.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void*>(0));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    m_lightPathVertexCount = static_cast<GLsizei>(lineVertices.size());
+}
+
+void Application::ensureLightPathFollowerValid()
+{
+    if (m_lights.empty()) {
+        m_lightPathFollowerIndex = 0;
+        return;
+    }
+    if (m_lightPathFollowerIndex < 0)
+        m_lightPathFollowerIndex = 0;
+    if (static_cast<size_t>(m_lightPathFollowerIndex) >= m_lights.size())
+        m_lightPathFollowerIndex = static_cast<int>(m_lights.size() - 1);
+}
+
+void Application::updateLightPath(float deltaTime)
+{
+    if (!m_lightPathEnabled || m_lightPathSamples.size() < 2 || m_lightPathTotalLength <= 0.0f)
+        return;
+    if (m_lights.empty())
+        return;
+
+    ensureLightPathFollowerValid();
+    Light& follower = m_lights[static_cast<size_t>(m_lightPathFollowerIndex)];
+
+    m_lightPathDistance += m_lightPathSpeed * deltaTime;
+    if (m_lightPathTotalLength > 0.0f) {
+        m_lightPathDistance = std::fmod(m_lightPathDistance, m_lightPathTotalLength);
+        if (m_lightPathDistance < 0.0f)
+            m_lightPathDistance += m_lightPathTotalLength;
+    }
+
+    auto it = std::lower_bound(
+        m_lightPathSamples.begin(), m_lightPathSamples.end(),
+        m_lightPathDistance,
+        [](const PathSample& sample, float distance) {
+            return sample.cumulativeLength < distance;
+        });
+
+    if (it == m_lightPathSamples.begin())
+        it = m_lightPathSamples.begin() + 1;
+    if (it == m_lightPathSamples.end())
+        it = m_lightPathSamples.end() - 1;
+
+    const PathSample& nextSample = *it;
+    const PathSample& prevSample = *(it - 1);
+    const float segmentLength = nextSample.cumulativeLength - prevSample.cumulativeLength;
+    float localT = 0.0f;
+    if (segmentLength > 1e-6f)
+        localT = (m_lightPathDistance - prevSample.cumulativeLength) / segmentLength;
+
+    glm::vec3 position = glm::mix(prevSample.position, nextSample.position, localT);
+    glm::vec3 tangent = glm::normalize(glm::mix(prevSample.tangent, nextSample.tangent, localT));
+
+    follower.position = position;
+    if (m_lightPathAimAtTarget) {
+        glm::vec3 toTarget = m_lightPathTarget - position;
+        if (glm::dot(toTarget, toTarget) > 1e-6f)
+            follower.direction = glm::normalize(toTarget);
+    } else {
+        follower.direction = glm::dot(tangent, tangent) > 1e-6f ? glm::normalize(-tangent) : follower.direction;
+    }
+}
+
+void Application::renderLightPath()
+{
+    if (!m_lightPathShowCurve || m_lightPathVao == 0 || m_lightPathVertexCount < 2)
+        return;
+
+    m_lightShader.bind();
+    glBindVertexArray(m_lightPathVao);
+
+    const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix;
+    glUniformMatrix4fv(m_lightShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+    const glm::vec3 pathColor { 0.95f, 0.55f, 0.15f };
+    glUniform3fv(m_lightShader.getUniformLocation("markerColor"), 1, glm::value_ptr(pathColor));
+
+    glLineWidth(2.0f);
+    glDrawArrays(GL_LINE_STRIP, 0, m_lightPathVertexCount);
+    glLineWidth(1.0f);
+
+    glBindVertexArray(0);
+}
+
 void Application::renderLightMarkers()
 {
     if (m_lights.empty() || m_lightVao == 0)
@@ -406,6 +662,15 @@ void Application::resetLights()
     m_lights.back().position = glm::vec3(0.0f, 0.0f, 3.0f);
     m_lights.back().color = glm::vec3(1.0f);
     m_selectedLightIndex = 0;
+    m_lightPathFollowerIndex = 0;
+    if (!m_lightPathSamples.empty()) {
+        m_lights.back().position = m_lightPathSamples.front().position;
+        if (m_lightPathAimAtTarget) {
+            glm::vec3 toTarget = m_lightPathTarget - m_lights.back().position;
+            if (glm::dot(toTarget, toTarget) > 1e-6f)
+                m_lights.back().direction = glm::normalize(toTarget);
+        }
+    }
 }
 
 void Application::selectNextLight()
@@ -440,6 +705,26 @@ void Application::renderGui()
     ImGui::ColorEdit3("Specular colour", glm::value_ptr(m_specularColor));
     ImGui::SliderFloat("Specular strength", &m_specularStrength, 0.0f, 5.0f);
     ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
+
+    ImGui::Separator();
+    ImGui::Text("Bezier Light Tour");
+    ImGui::Checkbox("Enable light tour", &m_lightPathEnabled);
+    ImGui::Checkbox("Show light path curve", &m_lightPathShowCurve);
+    ImGui::SliderFloat("Tour speed", &m_lightPathSpeed, 0.0f, 5.0f);
+    ensureLightPathFollowerValid();
+    if (!m_lights.empty()) {
+        int followerIndex = m_lightPathFollowerIndex;
+        if (ImGui::SliderInt("Tour light index", &followerIndex, 0, static_cast<int>(m_lights.size()) - 1))
+            m_lightPathFollowerIndex = followerIndex;
+    } else {
+        ImGui::TextUnformatted("Add a light to enable the tour.");
+    }
+    ImGui::Checkbox("Aim tour light at target", &m_lightPathAimAtTarget);
+    if (!m_lightPathAimAtTarget)
+        ImGui::BeginDisabled();
+    ImGui::DragFloat3("Tour target", glm::value_ptr(m_lightPathTarget), 0.05f);
+    if (!m_lightPathAimAtTarget)
+        ImGui::EndDisabled();
 
     ImGui::Separator();
     ImGui::Text("Viewpoints");
@@ -517,6 +802,7 @@ void Application::renderGui()
             newLight.direction = glm::vec3(0.0f, -1.0f, 0.0f);
         m_lights.push_back(newLight);
         m_selectedLightIndex = m_lights.size() - 1;
+        ensureLightPathFollowerValid();
     }
     ImGui::SameLine();
     if (ImGui::Button("Reset Lights")) {
@@ -526,6 +812,7 @@ void Application::renderGui()
     if (!m_lights.empty()) {
         if (m_selectedLightIndex >= m_lights.size())
             m_selectedLightIndex = m_lights.size() - 1;
+        ensureLightPathFollowerValid();
 
         if (ImGui::BeginListBox("Light List")) {
             for (size_t i = 0; i < m_lights.size(); ++i) {
@@ -556,6 +843,7 @@ void Application::renderGui()
                 m_selectedLightIndex = 0;
             else if (m_selectedLightIndex >= m_lights.size())
                 m_selectedLightIndex = m_lights.size() - 1;
+            ensureLightPathFollowerValid();
         }
         if (!canRemove)
             ImGui::EndDisabled();
