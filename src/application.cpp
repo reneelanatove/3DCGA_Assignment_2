@@ -18,6 +18,7 @@ DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
 #include <framework/trackball.h>
+#include <fmt/format.h>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -262,6 +263,7 @@ private:
     float m_lightPathTotalLength { 0.0f };
     bool m_lightPathEnabled { false };
     bool m_lightPathShowCurve { false };
+    bool m_lightPathShowControlPoints { false };
     bool m_lightPathAimAtTarget { true };
     glm::vec3 m_lightPathTarget { 0.0f, 1.0f, 0.0f };
     float m_lightPathSpeed { 0.6f };
@@ -271,6 +273,7 @@ private:
     GLuint m_lightPathVbo { 0 };
     GLsizei m_lightPathVertexCount { 0 };
     double m_lastFrameTime { 0.0 };
+    float m_lightPathControlPointScale { 0.12f };
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
@@ -290,6 +293,7 @@ private:
     glm::vec3 evaluateBezierTangent(const BezierSegment& segment, float t) const;
     void updateLightPath(float deltaTime);
     void renderLightPath();
+    void renderLightPathControlPoints();
     void ensureLightPathFollowerValid();
     void resetLights();
     void selectNextLight();
@@ -625,6 +629,56 @@ void Application::renderLightPath()
     glLineWidth(1.0f);
 
     glBindVertexArray(0);
+
+    if (m_lightPathShowControlPoints)
+        renderLightPathControlPoints();
+}
+
+void Application::renderLightPathControlPoints()
+{
+    if (m_lightVao == 0)
+        return;
+
+    std::vector<glm::vec3> cornerPoints;
+    std::vector<glm::vec3> handlePoints;
+    cornerPoints.reserve(m_lightPathSegments.size());
+    handlePoints.reserve(m_lightPathSegments.size() * 2);
+
+    for (size_t i = 0; i < m_lightPathSegments.size(); ++i) {
+        const BezierSegment& seg = m_lightPathSegments[i];
+        if (i == 0)
+            cornerPoints.push_back(seg.p0);
+        handlePoints.push_back(seg.p1);
+        handlePoints.push_back(seg.p2);
+        cornerPoints.push_back(seg.p3);
+    }
+
+    m_lightShader.bind();
+    glBindVertexArray(m_lightVao);
+    const GLint mvpLocation = m_lightShader.getUniformLocation("mvpMatrix");
+    const GLint colorLocation = m_lightShader.getUniformLocation("markerColor");
+
+    for (const glm::vec3& pt : cornerPoints) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), pt);
+        model = glm::scale(model, glm::vec3(m_lightPathControlPointScale));
+        const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
+        const glm::vec3 color { 0.2f, 0.7f, 1.0f };
+        glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3fv(colorLocation, 1, glm::value_ptr(color));
+        glDrawArrays(GL_TRIANGLES, 0, m_lightVertexCount);
+    }
+
+    for (const glm::vec3& pt : handlePoints) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), pt);
+        model = glm::scale(model, glm::vec3(m_lightPathControlPointScale * 0.8f));
+        const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
+        const glm::vec3 color { 1.0f, 0.3f, 0.6f };
+        glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3fv(colorLocation, 1, glm::value_ptr(color));
+        glDrawArrays(GL_TRIANGLES, 0, m_lightVertexCount);
+    }
+
+    glBindVertexArray(0);
 }
 
 void Application::renderLightMarkers()
@@ -710,6 +764,7 @@ void Application::renderGui()
     ImGui::Text("Bezier Light Tour");
     ImGui::Checkbox("Enable light tour", &m_lightPathEnabled);
     ImGui::Checkbox("Show light path curve", &m_lightPathShowCurve);
+    ImGui::Checkbox("Show control points", &m_lightPathShowControlPoints);
     ImGui::SliderFloat("Tour speed", &m_lightPathSpeed, 0.0f, 5.0f);
     ensureLightPathFollowerValid();
     if (!m_lights.empty()) {
@@ -725,6 +780,60 @@ void Application::renderGui()
     ImGui::DragFloat3("Tour target", glm::value_ptr(m_lightPathTarget), 0.05f);
     if (!m_lightPathAimAtTarget)
         ImGui::EndDisabled();
+
+    bool pathModified = false;
+    if (ImGui::TreeNode("Control Points")) {
+        for (size_t i = 0; i < m_lightPathSegments.size(); ++i) {
+            BezierSegment& seg = m_lightPathSegments[i];
+            const std::string header = fmt::format("Segment {}", i);
+            if (ImGui::TreeNode(header.c_str())) {
+                if (i == 0) {
+                    glm::vec3 p0 = seg.p0;
+                    if (ImGui::DragFloat3("P0", glm::value_ptr(p0), 0.05f)) {
+                        seg.p0 = p0;
+                        const size_t prev = (i + m_lightPathSegments.size() - 1) % m_lightPathSegments.size();
+                        m_lightPathSegments[prev].p3 = p0;
+                        pathModified = true;
+                    }
+                }
+
+                glm::vec3 p1 = seg.p1;
+                if (ImGui::DragFloat3("P1", glm::value_ptr(p1), 0.05f)) {
+                    seg.p1 = p1;
+                    pathModified = true;
+                }
+
+                glm::vec3 p2 = seg.p2;
+                if (ImGui::DragFloat3("P2", glm::value_ptr(p2), 0.05f)) {
+                    seg.p2 = p2;
+                    pathModified = true;
+                }
+
+                glm::vec3 p3 = seg.p3;
+                if (ImGui::DragFloat3("P3", glm::value_ptr(p3), 0.05f)) {
+                    seg.p3 = p3;
+                    const size_t next = (i + 1) % m_lightPathSegments.size();
+                    m_lightPathSegments[next].p0 = p3;
+                    pathModified = true;
+                }
+
+                ImGui::TreePop();
+            }
+        }
+        ImGui::TreePop();
+    }
+
+    if (pathModified) {
+        rebuildLightPathSamples();
+        uploadLightPathGeometry();
+        ensureLightPathFollowerValid();
+        if (!m_lights.empty() && !m_lightPathSamples.empty()) {
+            const bool originalEnabled = m_lightPathEnabled;
+            m_lightPathEnabled = true;
+            updateLightPath(0.0f);
+            m_lightPathEnabled = originalEnabled;
+        }
+    }
 
     ImGui::Separator();
     ImGui::Text("Viewpoints");
