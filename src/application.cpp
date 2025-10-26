@@ -12,6 +12,7 @@ DISABLE_WARNINGS_PUSH()
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/mat4x4.hpp>
 #include <imgui/imgui.h>
 DISABLE_WARNINGS_POP()
@@ -27,7 +28,165 @@ DISABLE_WARNINGS_POP()
 #include <iostream>
 #include <string>
 #include <memory>
+#include <optional>
 #include <vector>
+
+namespace {
+
+struct WindmillParameters {
+    glm::vec3 baseSize { 2.5f, 1.0f, 2.5f };
+    glm::vec3 towerSize { 0.7f, 3.2f, 0.7f };
+    glm::vec3 hubSize { 0.55f, 0.55f, 0.55f };
+    float hubForwardOffset { 0.4f };
+    float hubVerticalOffset { 0.0f };
+    float armLength { 2.7f };
+    float armWidth { 0.35f };
+    float armThickness { 0.12f };
+    glm::vec3 structureColor { 0.88f, 0.88f, 0.86f };
+    float rotationSpeedDegPerSec { 45.0f };
+};
+
+struct WindmillMeshes {
+    Mesh body;
+    Mesh rotor;
+};
+
+Mesh createBoxMesh(const glm::vec3& size)
+{
+    Mesh mesh;
+    mesh.vertices.reserve(24);
+    mesh.triangles.reserve(12);
+
+    const glm::vec3 half = size * 0.5f;
+    const std::array<glm::vec3, 8> corners = {
+        glm::vec3(-half.x, -half.y, -half.z),
+        glm::vec3(half.x, -half.y, -half.z),
+        glm::vec3(half.x, half.y, -half.z),
+        glm::vec3(-half.x, half.y, -half.z),
+        glm::vec3(-half.x, -half.y, half.z),
+        glm::vec3(half.x, -half.y, half.z),
+        glm::vec3(half.x, half.y, half.z),
+        glm::vec3(-half.x, half.y, half.z)
+    };
+
+    const std::array<glm::vec3, 6> normals = {
+        glm::vec3(0.0f, 0.0f, 1.0f),   // Front
+        glm::vec3(0.0f, 0.0f, -1.0f),  // Back
+        glm::vec3(-1.0f, 0.0f, 0.0f),  // Left
+        glm::vec3(1.0f, 0.0f, 0.0f),   // Right
+        glm::vec3(0.0f, 1.0f, 0.0f),   // Top
+        glm::vec3(0.0f, -1.0f, 0.0f)   // Bottom
+    };
+
+    const std::array<std::array<unsigned, 4>, 6> faceIndices = {{
+        { 4, 5, 6, 7 }, // Front
+        { 1, 0, 3, 2 }, // Back
+        { 0, 4, 7, 3 }, // Left
+        { 5, 1, 2, 6 }, // Right
+        { 3, 7, 6, 2 }, // Top
+        { 0, 1, 5, 4 }  // Bottom
+    }};
+
+    for (std::size_t face = 0; face < faceIndices.size(); ++face) {
+        const glm::vec3 normal = normals[face];
+        const auto& indices = faceIndices[face];
+        const std::size_t baseIndex = mesh.vertices.size();
+        for (std::size_t i = 0; i < 4; ++i) {
+            Vertex vertex;
+            vertex.position = corners[indices[i]];
+            vertex.normal = normal;
+            vertex.texCoord = glm::vec2(0.0f);
+            mesh.vertices.push_back(vertex);
+        }
+        mesh.triangles.emplace_back(glm::uvec3(baseIndex + 0, baseIndex + 1, baseIndex + 2));
+        mesh.triangles.emplace_back(glm::uvec3(baseIndex + 0, baseIndex + 2, baseIndex + 3));
+    }
+
+    mesh.material.kd = glm::vec3(0.8f);
+    mesh.material.ks = glm::vec3(0.2f);
+    mesh.material.shininess = 32.0f;
+
+    return mesh;
+}
+
+void appendTransformedMesh(Mesh& destination, const Mesh& source, const glm::mat4& transform)
+{
+    const std::size_t vertexOffset = destination.vertices.size();
+    const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+    const unsigned int indexOffset = static_cast<unsigned int>(vertexOffset);
+
+    destination.vertices.reserve(destination.vertices.size() + source.vertices.size());
+    destination.triangles.reserve(destination.triangles.size() + source.triangles.size());
+
+    for (const Vertex& vertex : source.vertices) {
+        Vertex transformedVertex = vertex;
+        const glm::vec4 position = transform * glm::vec4(vertex.position, 1.0f);
+        transformedVertex.position = glm::vec3(position);
+        const glm::vec3 transformedNormal = normalMatrix * vertex.normal;
+        const float normalLengthSq = glm::dot(transformedNormal, transformedNormal);
+        if (normalLengthSq > 1e-10f)
+            transformedVertex.normal = transformedNormal / std::sqrt(normalLengthSq);
+        else
+            transformedVertex.normal = vertex.normal;
+        destination.vertices.push_back(transformedVertex);
+    }
+
+    for (const glm::uvec3& triangle : source.triangles) {
+        destination.triangles.emplace_back(glm::uvec3(
+            indexOffset + triangle.x,
+            indexOffset + triangle.y,
+            indexOffset + triangle.z));
+    }
+}
+
+glm::vec3 computeHubPosition(const WindmillParameters& params)
+{
+    const float towerBaseY = params.baseSize.y;
+    return glm::vec3(0.0f, towerBaseY + params.towerSize.y + params.hubVerticalOffset, params.hubForwardOffset);
+}
+
+WindmillMeshes buildWindmillMeshes(const WindmillParameters& params)
+{
+    WindmillMeshes result;
+    result.body.vertices.reserve(24 * 4);
+    result.body.triangles.reserve(12 * 4);
+    result.rotor.vertices.reserve(24 * 5);
+    result.rotor.triangles.reserve(12 * 5);
+
+    const glm::mat4 identity(1.0f);
+
+    const Mesh baseMesh = createBoxMesh(params.baseSize);
+    const glm::mat4 baseTransform = glm::translate(identity, glm::vec3(0.0f, params.baseSize.y * 0.5f, 0.0f));
+    appendTransformedMesh(result.body, baseMesh, baseTransform);
+
+    const Mesh towerMesh = createBoxMesh(params.towerSize);
+    const float towerBaseY = params.baseSize.y;
+    const glm::mat4 towerTransform = glm::translate(identity, glm::vec3(0.0f, towerBaseY + params.towerSize.y * 0.5f, 0.0f));
+    appendTransformedMesh(result.body, towerMesh, towerTransform);
+
+    const Mesh hubMesh = createBoxMesh(params.hubSize);
+    appendTransformedMesh(result.rotor, hubMesh, identity);
+
+    const Mesh armMesh = createBoxMesh(glm::vec3(params.armLength, params.armWidth, params.armThickness));
+    for (int i = 0; i < 4; ++i) {
+        const float angle = glm::radians(90.0f * static_cast<float>(i));
+        const glm::mat4 armTransform = glm::rotate(identity, angle, glm::vec3(0.0f, 0.0f, 1.0f))
+            * glm::translate(identity, glm::vec3(params.armLength * 0.5f, 0.0f, 0.0f));
+        appendTransformedMesh(result.rotor, armMesh, armTransform);
+    }
+
+    result.body.material.kd = params.structureColor;
+    result.body.material.ks = glm::vec3(0.2f);
+    result.body.material.shininess = 32.0f;
+
+    result.rotor.material.kd = params.structureColor;
+    result.rotor.material.ks = glm::vec3(0.2f);
+    result.rotor.material.shininess = 32.0f;
+
+    return result;
+}
+
+} // namespace
 
 class Application {
 public:
@@ -71,6 +230,8 @@ public:
         initializeLightGeometry();
         resetLights();
         initializeLightPath();
+        sanitizeWindmillParams();
+        rebuildWindmillMesh();
         m_lastFrameTime = glfwGetTime();
     }
 
@@ -98,8 +259,20 @@ public:
             m_lastFrameTime = currentTime;
 
             updateLightPath(deltaTime);
+            const float rotationSpeedRad = glm::radians(m_windmillParams.rotationSpeedDegPerSec);
+            if (rotationSpeedRad != 0.0f) {
+                m_windmillRotationAngle += rotationSpeedRad * deltaTime;
+                const float fullTurn = glm::two_pi<float>();
+                if (fullTurn > 0.0f) {
+                    m_windmillRotationAngle = std::fmod(m_windmillRotationAngle, fullTurn);
+                    if (m_windmillRotationAngle < 0.0f)
+                        m_windmillRotationAngle += fullTurn;
+                }
+            }
 
             renderGui();
+            if (m_windmillDirty)
+                rebuildWindmillMesh();
 
             // Clear the screen
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
@@ -117,16 +290,16 @@ public:
             }
             m_viewMatrix = camera.viewMatrix();
             m_projectionMatrix = camera.projectionMatrix();
-            const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
-            // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
-            // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
-            const glm::mat3 normalModelMatrix = glm::inverseTranspose(glm::mat3(m_modelMatrix));
 
-            for (GPUMesh& mesh : m_meshes) {
+            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
+                const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
+                // Normals need the inverse transpose to handle non-uniform scaling correctly.
+                const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
+
                 m_defaultShader.bind();
-                glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
-                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
-                glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
+                glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
+                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
+                glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
                 if (mesh.hasTextureCoords()) {
                     m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
@@ -144,6 +317,18 @@ public:
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
+            };
+
+            for (GPUMesh& mesh : m_meshes)
+                drawMeshWithModel(mesh, m_modelMatrix);
+
+            if (m_windmillBodyMesh)
+                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f));
+
+            if (m_windmillRotorMesh) {
+                glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
+                rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                drawMeshWithModel(*m_windmillRotorMesh, rotorModel);
             }
 
             // Processes input and swaps the window buffer
@@ -235,6 +420,12 @@ private:
     Texture m_texture;
     bool m_useMaterial { true };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
+    WindmillParameters m_windmillParams;
+    std::optional<GPUMesh> m_windmillBodyMesh;
+    std::optional<GPUMesh> m_windmillRotorMesh;
+    bool m_windmillDirty { true };
+    glm::vec3 m_windmillHubPosition { 0.0f };
+    float m_windmillRotationAngle { 0.0f };
     glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
@@ -300,6 +491,8 @@ private:
     void selectPreviousLight();
     void renderGui();
     void uploadLightsToShader();
+    void rebuildWindmillMesh();
+    void sanitizeWindmillParams();
 };
 
 void Application::initializeViews()
@@ -761,6 +954,35 @@ void Application::renderGui()
     ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
 
     ImGui::Separator();
+    ImGui::Text("Windmill");
+    bool windmillChanged = false;
+    windmillChanged |= ImGui::DragFloat("Base width", &m_windmillParams.baseSize.x, 0.05f, 0.2f, 10.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Base depth", &m_windmillParams.baseSize.z, 0.05f, 0.2f, 10.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Base height", &m_windmillParams.baseSize.y, 0.05f, 0.2f, 10.0f, "%.2f");
+
+    windmillChanged |= ImGui::DragFloat("Tower height", &m_windmillParams.towerSize.y, 0.05f, 0.5f, 15.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Tower width", &m_windmillParams.towerSize.x, 0.01f, 0.1f, 5.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Tower depth", &m_windmillParams.towerSize.z, 0.01f, 0.1f, 5.0f, "%.2f");
+
+    windmillChanged |= ImGui::DragFloat3("Hub size", glm::value_ptr(m_windmillParams.hubSize), 0.01f, 0.05f, 3.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Hub forward offset", &m_windmillParams.hubForwardOffset, 0.01f, -2.0f, 2.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Hub vertical offset", &m_windmillParams.hubVerticalOffset, 0.01f, -2.0f, 2.0f, "%.2f");
+
+    windmillChanged |= ImGui::DragFloat("Arm length", &m_windmillParams.armLength, 0.05f, 0.2f, 6.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Arm width", &m_windmillParams.armWidth, 0.01f, 0.05f, 2.0f, "%.2f");
+    windmillChanged |= ImGui::DragFloat("Arm thickness", &m_windmillParams.armThickness, 0.01f, 0.05f, 2.0f, "%.2f");
+
+    windmillChanged |= ImGui::ColorEdit3("Structure colour", glm::value_ptr(m_windmillParams.structureColor));
+    float rotationSpeed = m_windmillParams.rotationSpeedDegPerSec;
+    if (ImGui::SliderFloat("Rotation speed (deg/s)", &rotationSpeed, -360.0f, 360.0f, "%.1f"))
+        m_windmillParams.rotationSpeedDegPerSec = std::clamp(rotationSpeed, -720.0f, 720.0f);
+
+    if (windmillChanged) {
+        sanitizeWindmillParams();
+        m_windmillDirty = true;
+    }
+
+    ImGui::Separator();
     ImGui::Text("Bezier Light Tour");
     ImGui::Checkbox("Enable light tour", &m_lightPathEnabled);
     ImGui::Checkbox("Show light path curve", &m_lightPathShowCurve);
@@ -978,6 +1200,46 @@ void Application::renderGui()
     }
 
     ImGui::End();
+}
+
+void Application::sanitizeWindmillParams()
+{
+    constexpr float minDimension = 0.05f;
+    auto clampVec3 = [minDimension](glm::vec3& value) {
+        value.x = std::max(value.x, minDimension);
+        value.y = std::max(value.y, minDimension);
+        value.z = std::max(value.z, minDimension);
+    };
+
+    clampVec3(m_windmillParams.baseSize);
+    clampVec3(m_windmillParams.towerSize);
+    clampVec3(m_windmillParams.hubSize);
+
+    m_windmillParams.hubForwardOffset = std::clamp(m_windmillParams.hubForwardOffset, -5.0f, 5.0f);
+    m_windmillParams.hubVerticalOffset = std::clamp(m_windmillParams.hubVerticalOffset, -5.0f, 5.0f);
+
+    m_windmillParams.armLength = std::max(m_windmillParams.armLength, minDimension);
+    m_windmillParams.armWidth = std::max(m_windmillParams.armWidth, minDimension * 0.5f);
+    m_windmillParams.armThickness = std::max(m_windmillParams.armThickness, minDimension * 0.5f);
+
+    m_windmillParams.structureColor.x = std::clamp(m_windmillParams.structureColor.x, 0.0f, 1.0f);
+    m_windmillParams.structureColor.y = std::clamp(m_windmillParams.structureColor.y, 0.0f, 1.0f);
+    m_windmillParams.structureColor.z = std::clamp(m_windmillParams.structureColor.z, 0.0f, 1.0f);
+    m_windmillParams.rotationSpeedDegPerSec = std::clamp(m_windmillParams.rotationSpeedDegPerSec, -720.0f, 720.0f);
+}
+
+void Application::rebuildWindmillMesh()
+{
+    sanitizeWindmillParams();
+    const WindmillMeshes cpuMeshes = buildWindmillMeshes(m_windmillParams);
+    m_windmillHubPosition = computeHubPosition(m_windmillParams);
+
+    m_windmillBodyMesh.reset();
+    m_windmillRotorMesh.reset();
+
+    m_windmillBodyMesh.emplace(cpuMeshes.body);
+    m_windmillRotorMesh.emplace(cpuMeshes.rotor);
+    m_windmillDirty = false;
 }
 
 void Application::uploadLightsToShader()
