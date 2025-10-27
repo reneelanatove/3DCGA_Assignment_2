@@ -228,6 +228,7 @@ public:
             std::cerr << e.what() << std::endl;
         }
 
+        initializeShadowTexture();
         initializeViews();
         initializeLightGeometry();
         initializeWindArrowGeometry();
@@ -292,6 +293,49 @@ public:
             }
 
             renderGui();
+
+            // === Shadow Pass ===
+            glm::mat4 lightProj;
+            if (m_lights[0].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
+            else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+
+            glm::mat4 lightView = glm::lookAt(m_lights[0].position, m_lights[0].position + m_lights[0].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+
+            glm::mat4 lightMVP = lightProj * lightView;
+
+            // Bind the off-screen framebuffer
+            glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+
+            // Clear the shadow map and set needed options
+            glClearDepth(1.0);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glEnable(GL_DEPTH_TEST);
+
+            for (GPUMesh& mesh : m_meshes) {
+                // Bind the shader
+                m_shadowShader.bind();
+                // Set viewport size
+                const int SHADOWTEX_WIDTH = 1024;
+                const int SHADOWTEX_HEIGHT = 1024;
+                glViewport(0, 0, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT);
+
+                // .... HERE YOU MUST ADD THE CORRECT UNIFORMS FOR RENDERING THE SHADOW MAP
+                glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(lightMVP));
+
+
+                // Bind vertex data
+                glBindVertexArray(m_lightVao);
+
+                glVertexAttribPointer(m_shadowShader.getAttributeLocation("pos"), 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
+
+                // Execute draw command
+                mesh.draw(m_shadowShader);
+            }
+
+
+            // Unbind the off-screen framebuffer
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
             if (m_windmillDirty)
                 rebuildWindmillMesh();
 
@@ -323,6 +367,9 @@ public:
                 if (mesh.hasTextureCoords()) {
                     m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
+                    glActiveTexture(GL_TEXTURE1);
+                    glBindTexture(GL_TEXTURE_2D, m_texShadow);
+                    glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
                 } else {
@@ -339,8 +386,6 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("sunDirection"), 1, glm::value_ptr(m_currentSunDirection));
                 glUniform3fv(m_defaultShader.getUniformLocation("sunColor"), 1, glm::value_ptr(m_currentSunColor));
                 glUniform1f(m_defaultShader.getUniformLocation("sunIntensity"), m_currentSunIntensity);
-                uploadLightsToShader();
-                mesh.draw(m_defaultShader);
             };
 
             for (GPUMesh& mesh : m_meshes)
@@ -517,6 +562,8 @@ private:
     std::unique_ptr<Trackball> m_trackball;
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
+	GLuint m_texShadow{ 0 };
+    GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
     std::vector<BezierSegment> m_lightPathSegments;
@@ -548,6 +595,7 @@ private:
 
     void initializeViews();
     Trackball& activeTrackball();
+    void initializeShadowTexture();
     void resetActiveView();
     void storeActiveViewState();
     void initializeLightGeometry();
@@ -612,6 +660,37 @@ Trackball& Application::activeTrackball()
         m_activeViewIndex = m_views.size() - 1;
 
     return *m_trackball;
+}
+
+void Application::initializeShadowTexture() {
+
+    // === Create Shadow Texture ===
+    glGenTextures(1, &m_texShadow);
+
+    const int SHADOWTEX_WIDTH = 1024;
+    const int SHADOWTEX_HEIGHT = 1024;
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, m_texShadow);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+    // Set behaviour for when texture coordinates are outside the [0, 1] range.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Set interpolation for texture sampling (GL_NEAREST for no interpolation).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // === Create framebuffer for extra texture ===
+    glGenFramebuffers(1, &m_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texShadow, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Application::resetActiveView()
