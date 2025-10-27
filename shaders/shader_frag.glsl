@@ -9,7 +9,6 @@ layout(std140) uniform Material // Must match the GPUMaterial defined in src/mes
 };
 
 uniform sampler2D colorMap;
-uniform sampler2D shadowMap;
 uniform bool hasTexCoords;
 uniform bool useMaterial;
 uniform int shadingMode;
@@ -27,6 +26,10 @@ uniform int lightIsSpotlight[MAX_LIGHTS];
 uniform vec3 lightDirections[MAX_LIGHTS];
 uniform float lightSpotCosCutoff[MAX_LIGHTS];
 uniform float lightSpotSoftness[MAX_LIGHTS];
+
+uniform bool shadowsEnabled;
+uniform mat4 lightMVP;
+uniform sampler2D shadowMap;
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -86,6 +89,19 @@ void main()
 
         finalColor += specColor * specAccum;
     }
+
+    float shadowValue = 1.0;
+    if (shadowsEnabled) {
+        vec4 lightSpacePos = lightMVP * vec4(fragPosition, 1.0);
+        lightSpacePos /= lightSpacePos.w;
+        lightSpacePos = lightSpacePos * 0.5 + 0.5;
+        float closestDepth = texture(shadowMap, lightSpacePos.xy).r;
+        float currentDepth = lightSpacePos.z;
+        float bias = 0.001;
+        shadowValue = currentDepth - bias > closestDepth ? 0.0 : 1.0;
+    }
+
+    finalColor = finalColor * shadowValue;
 
     fragColor = vec4(finalColor, 1);
 }
