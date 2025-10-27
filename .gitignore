@@ -29,7 +29,6 @@ install_manifest.txt
 
 # Compiled objects and libraries
 *.o
-*.obj
 *.lo
 *.la
 *.a

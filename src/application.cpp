@@ -131,10 +131,7 @@ public:
                 glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(lightMVP));
 
 
-                // Bind vertex data
-                glBindVertexArray(m_lightVao);
-
-                glVertexAttribPointer(m_shadowShader.getAttributeLocation("pos"), 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
+                
 
                 // Execute draw command
                 mesh.draw(m_shadowShader);
@@ -189,6 +186,9 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
+
+                uploadLightsToShader();
+                mesh.draw(m_defaultShader);
             }
 
             // Processes input and swaps the window buffer
