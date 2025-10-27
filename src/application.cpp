@@ -374,6 +374,7 @@ public:
                 glBindTexture(GL_TEXTURE_2D, m_texShadow);
                 glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
 				glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
+				glUniform1i(m_defaultShader.getUniformLocation("pcf"), m_pcf);
 				glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), 1, GL_FALSE, glm::value_ptr(lightMVP));
                 glUniform1i(m_defaultShader.getUniformLocation("shadingMode"), static_cast<int>(m_shadingModel));
                 glUniform3fv(m_defaultShader.getUniformLocation("customDiffuseColor"), 1, glm::value_ptr(m_customDiffuseColor));
@@ -500,6 +501,7 @@ private:
     Texture m_texture;
     bool m_useMaterial { true };
     bool m_shadows{ false };
+    bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
     std::optional<GPUMesh> m_windmillBodyMesh;
@@ -1825,6 +1827,7 @@ void Application::renderGui()
 		ImGui::Separator();
         ImGui::Text("Shadows");
         ImGui::Checkbox("Shadows", &m_shadows);
+		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
     }
 
     ImGui::End();
