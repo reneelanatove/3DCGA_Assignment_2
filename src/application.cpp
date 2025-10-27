@@ -202,7 +202,7 @@ public:
             else if (action == GLFW_RELEASE)
                 onKeyReleased(key, mods);
         });
-        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
+        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/lucy_scene.obj");
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -211,7 +211,7 @@ public:
 
             ShaderBuilder shadowBuilder;
             shadowBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shadow_vert.glsl");
-            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
+            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
             ShaderBuilder lightBuilder;
@@ -295,11 +295,13 @@ public:
             renderGui();
 
             // === Shadow Pass ===
+            glEnable(GL_DEPTH_TEST);
+
             glm::mat4 lightProj;
             if (m_lights[0].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
             else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
 
-            glm::mat4 lightView = glm::lookAt(m_lights[0].position, m_lights[0].position + m_lights[0].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+            glm::mat4 lightView = glm::lookAt(m_lights[0].position, m_lights[0].direction, glm::vec3(0.0f, 1.0f, 0.0f));
 
             glm::mat4 lightMVP = lightProj * lightView;
 
@@ -309,7 +311,6 @@ public:
             // Clear the shadow map and set needed options
             glClearDepth(1.0);
             glClear(GL_DEPTH_BUFFER_BIT);
-            glEnable(GL_DEPTH_TEST);
 
             for (GPUMesh& mesh : m_meshes) {
                 // Bind the shader
@@ -322,9 +323,6 @@ public:
                 // .... HERE YOU MUST ADD THE CORRECT UNIFORMS FOR RENDERING THE SHADOW MAP
                 glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(lightMVP));
 
-
-                
-
                 // Execute draw command
                 mesh.draw(m_shadowShader);
             }
@@ -335,6 +333,8 @@ public:
 
             if (m_windmillDirty)
                 rebuildWindmillMesh();
+			// === Main Render Pass ===
+			glViewport(0, 0, m_window.getFrameBufferSize().x, m_window.getFrameBufferSize().y);
 
             // Clear the screen
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
@@ -364,15 +364,17 @@ public:
                 if (mesh.hasTextureCoords()) {
                     m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
-                    glActiveTexture(GL_TEXTURE1);
-                    glBindTexture(GL_TEXTURE_2D, m_texShadow);
-                    glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
                 } else {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, m_texShadow);
+                glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
+				glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
+				glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), 1, GL_FALSE, glm::value_ptr(lightMVP));
                 glUniform1i(m_defaultShader.getUniformLocation("shadingMode"), static_cast<int>(m_shadingModel));
                 glUniform3fv(m_defaultShader.getUniformLocation("customDiffuseColor"), 1, glm::value_ptr(m_customDiffuseColor));
                 glUniform3fv(m_defaultShader.getUniformLocation("viewPosition"), 1, glm::value_ptr(camera.position()));
@@ -497,6 +499,7 @@ private:
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     bool m_useMaterial { true };
+    bool m_shadows{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
     std::optional<GPUMesh> m_windmillBodyMesh;
@@ -562,7 +565,7 @@ private:
     std::unique_ptr<Trackball> m_trackball;
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
-	GLuint m_texShadow{ 0 };
+	GLuint m_texShadow { 0 };
     GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
@@ -1818,6 +1821,10 @@ void Application::renderGui()
         }
         ImGui::SliderFloat("Spot Cos Cutoff", &selectedLight.spotCosCutoff, 0.0f, 1.0f);
         ImGui::SliderFloat("Spot Softness", &selectedLight.spotSoftness, 0.0f, 1.0f);
+
+		ImGui::Separator();
+        ImGui::Text("Shadows");
+        ImGui::Checkbox("Shadows", &m_shadows);
     }
 
     ImGui::End();
