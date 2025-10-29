@@ -13,6 +13,7 @@ DISABLE_WARNINGS_PUSH()
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 #include <imgui/imgui.h>
 DISABLE_WARNINGS_POP()
@@ -258,6 +259,8 @@ public:
             float deltaTime = static_cast<float>(currentTime - m_lastFrameTime);
             m_lastFrameTime = currentTime;
 
+            Trackball& camera = activeTrackball();
+            updateCameraPath(deltaTime, camera);
             updateLightPath(deltaTime);
             const float rotationSpeedRad = glm::radians(m_windmillParams.rotationSpeedDegPerSec);
             if (rotationSpeedRad != 0.0f) {
@@ -281,7 +284,6 @@ public:
             // ...
             glEnable(GL_DEPTH_TEST);
 
-            Trackball& camera = activeTrackball();
             if (!m_views.empty()) {
                 Viewpoint& viewState = m_views[m_activeViewIndex];
                 viewState.lookAt = camera.lookAt();
@@ -459,6 +461,11 @@ private:
     glm::vec3 m_lightPathTarget { 0.0f, 1.0f, 0.0f };
     float m_lightPathSpeed { 0.6f };
     float m_lightPathDistance { 0.0f };
+    bool m_cameraPathEnabled { false };
+    bool m_cameraPathAimAtTarget { true };
+    float m_cameraPathSpeed { 0.6f };
+    float m_cameraPathDistance { 0.0f };
+    float m_cameraPathLookAhead { 2.0f };
     int m_lightPathFollowerIndex { 0 };
     GLuint m_lightPathVao { 0 };
     GLuint m_lightPathVbo { 0 };
@@ -480,9 +487,12 @@ private:
     void initializeLightPath();
     void rebuildLightPathSamples();
     void uploadLightPathGeometry();
+    float wrapPathDistance(float distance) const;
+    bool samplePathAtDistance(float distance, glm::vec3& position, glm::vec3& tangent) const;
     glm::vec3 evaluateBezier(const BezierSegment& segment, float t) const;
     glm::vec3 evaluateBezierTangent(const BezierSegment& segment, float t) const;
     void updateLightPath(float deltaTime);
+    void updateCameraPath(float deltaTime, Trackball& camera);
     void renderLightPath();
     void renderLightPathControlPoints();
     void ensureLightPathFollowerValid();
@@ -660,6 +670,7 @@ void Application::initializeLightPath()
 
     rebuildLightPathSamples();
     uploadLightPathGeometry();
+    m_cameraPathDistance = wrapPathDistance(m_cameraPathDistance);
     if (!m_lights.empty() && !m_lightPathSamples.empty()) {
         m_lights.front().position = m_lightPathSamples.front().position;
         if (m_lightPathAimAtTarget) {
@@ -743,6 +754,51 @@ void Application::uploadLightPathGeometry()
     m_lightPathVertexCount = static_cast<GLsizei>(lineVertices.size());
 }
 
+float Application::wrapPathDistance(float distance) const
+{
+    if (m_lightPathTotalLength <= 0.0f)
+        return 0.0f;
+    distance = std::fmod(distance, m_lightPathTotalLength);
+    if (distance < 0.0f)
+        distance += m_lightPathTotalLength;
+    return distance;
+}
+
+bool Application::samplePathAtDistance(float distance, glm::vec3& position, glm::vec3& tangent) const
+{
+    if (m_lightPathSamples.size() < 2)
+        return false;
+
+    auto it = std::lower_bound(
+        m_lightPathSamples.begin(), m_lightPathSamples.end(),
+        distance,
+        [](const PathSample& sample, float query) {
+            return sample.cumulativeLength < query;
+        });
+
+    if (it == m_lightPathSamples.begin())
+        it = m_lightPathSamples.begin() + 1;
+    if (it == m_lightPathSamples.end())
+        it = m_lightPathSamples.end() - 1;
+
+    const PathSample& nextSample = *it;
+    const PathSample& prevSample = *(it - 1);
+    const float segmentLength = nextSample.cumulativeLength - prevSample.cumulativeLength;
+
+    float localT = 0.0f;
+    if (segmentLength > 1e-6f)
+        localT = (distance - prevSample.cumulativeLength) / segmentLength;
+
+    position = glm::mix(prevSample.position, nextSample.position, localT);
+    glm::vec3 mixedTangent = glm::mix(prevSample.tangent, nextSample.tangent, localT);
+    if (glm::dot(mixedTangent, mixedTangent) > 1e-6f)
+        tangent = glm::normalize(mixedTangent);
+    else
+        tangent = prevSample.tangent;
+
+    return true;
+}
+
 void Application::ensureLightPathFollowerValid()
 {
     if (m_lights.empty()) {
@@ -766,33 +822,12 @@ void Application::updateLightPath(float deltaTime)
     Light& follower = m_lights[static_cast<size_t>(m_lightPathFollowerIndex)];
 
     m_lightPathDistance += m_lightPathSpeed * deltaTime;
-    if (m_lightPathTotalLength > 0.0f) {
-        m_lightPathDistance = std::fmod(m_lightPathDistance, m_lightPathTotalLength);
-        if (m_lightPathDistance < 0.0f)
-            m_lightPathDistance += m_lightPathTotalLength;
-    }
+    m_lightPathDistance = wrapPathDistance(m_lightPathDistance);
 
-    auto it = std::lower_bound(
-        m_lightPathSamples.begin(), m_lightPathSamples.end(),
-        m_lightPathDistance,
-        [](const PathSample& sample, float distance) {
-            return sample.cumulativeLength < distance;
-        });
-
-    if (it == m_lightPathSamples.begin())
-        it = m_lightPathSamples.begin() + 1;
-    if (it == m_lightPathSamples.end())
-        it = m_lightPathSamples.end() - 1;
-
-    const PathSample& nextSample = *it;
-    const PathSample& prevSample = *(it - 1);
-    const float segmentLength = nextSample.cumulativeLength - prevSample.cumulativeLength;
-    float localT = 0.0f;
-    if (segmentLength > 1e-6f)
-        localT = (m_lightPathDistance - prevSample.cumulativeLength) / segmentLength;
-
-    glm::vec3 position = glm::mix(prevSample.position, nextSample.position, localT);
-    glm::vec3 tangent = glm::normalize(glm::mix(prevSample.tangent, nextSample.tangent, localT));
+    glm::vec3 position { 0.0f };
+    glm::vec3 tangent { 0.0f };
+    if (!samplePathAtDistance(m_lightPathDistance, position, tangent))
+        return;
 
     follower.position = position;
     if (m_lightPathAimAtTarget) {
@@ -802,6 +837,56 @@ void Application::updateLightPath(float deltaTime)
     } else {
         follower.direction = glm::dot(tangent, tangent) > 1e-6f ? glm::normalize(-tangent) : follower.direction;
     }
+}
+
+void Application::updateCameraPath(float deltaTime, Trackball& camera)
+{
+    if (!m_cameraPathEnabled || m_lightPathSamples.size() < 2 || m_lightPathTotalLength <= 0.0f)
+        return;
+
+    m_cameraPathDistance += m_cameraPathSpeed * deltaTime;
+    m_cameraPathDistance = wrapPathDistance(m_cameraPathDistance);
+
+    glm::vec3 position { 0.0f };
+    glm::vec3 tangent { 0.0f };
+    if (!samplePathAtDistance(m_cameraPathDistance, position, tangent))
+        return;
+
+    if (glm::dot(tangent, tangent) < 1e-6f)
+        tangent = glm::vec3(0.0f, 0.0f, 1.0f);
+
+    glm::vec3 desiredTarget;
+    if (m_cameraPathAimAtTarget) {
+        desiredTarget = m_lightPathTarget;
+    } else {
+        desiredTarget = position + glm::normalize(tangent) * m_cameraPathLookAhead;
+    }
+
+    glm::vec3 toTarget = desiredTarget - position;
+    if (glm::dot(toTarget, toTarget) < 1e-6f) {
+        toTarget = glm::vec3(0.0f, 0.0f, 1.0f);
+        desiredTarget = position + toTarget;
+    }
+
+    const float distance = glm::length(toTarget);
+    glm::vec3 forward = toTarget / distance;
+
+    glm::vec3 worldUp { 0.0f, 1.0f, 0.0f };
+    if (std::abs(glm::dot(forward, worldUp)) > 0.95f)
+        worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
+
+    glm::vec3 right = glm::normalize(glm::cross(worldUp, forward));
+    glm::vec3 up = glm::normalize(glm::cross(forward, right));
+
+    glm::mat3 rotationMatrix(1.0f);
+    rotationMatrix[0] = right;
+    rotationMatrix[1] = up;
+    rotationMatrix[2] = forward;
+
+    glm::quat orientation = glm::quat_cast(rotationMatrix);
+    glm::vec3 eulerAngles = glm::eulerAngles(orientation);
+
+    camera.setCamera(desiredTarget, eulerAngles, distance);
 }
 
 void Application::renderLightPath()
@@ -942,6 +1027,13 @@ void Application::renderGui()
     activeTrackball();
     storeActiveViewState();
 
+    auto refreshCameraPath = [this]() {
+        if (!m_cameraPathEnabled)
+            return;
+        Trackball& controlledCamera = activeTrackball();
+        updateCameraPath(0.0f, controlledCamera);
+    };
+
     ImGui::Begin("Shading & Lighting");
     static const char* shadingModes[] = { "Unlit", "Lambert", "Phong" };
     int shadingIndex = static_cast<int>(m_shadingModel);
@@ -1003,6 +1095,31 @@ void Application::renderGui()
     if (!m_lightPathAimAtTarget)
         ImGui::EndDisabled();
 
+    ImGui::Separator();
+    ImGui::Text("Camera Bezier Tour");
+    bool cameraEnabledBefore = m_cameraPathEnabled;
+    if (ImGui::Checkbox("Enable camera tour", &m_cameraPathEnabled)) {
+        if (m_cameraPathEnabled && !cameraEnabledBefore)
+            m_cameraPathDistance = m_lightPathDistance;
+        refreshCameraPath();
+    }
+    if (ImGui::SliderFloat("Camera tour speed", &m_cameraPathSpeed, 0.0f, 5.0f))
+        refreshCameraPath();
+    if (ImGui::Checkbox("Aim camera at tour target", &m_cameraPathAimAtTarget))
+        refreshCameraPath();
+    if (m_cameraPathAimAtTarget) {
+        ImGui::BeginDisabled();
+        ImGui::SliderFloat("Camera look-ahead", &m_cameraPathLookAhead, 0.1f, 8.0f);
+        ImGui::EndDisabled();
+    } else {
+        if (ImGui::SliderFloat("Camera look-ahead", &m_cameraPathLookAhead, 0.1f, 8.0f))
+            refreshCameraPath();
+    }
+    if (ImGui::Button("Align camera with light tour")) {
+        m_cameraPathDistance = wrapPathDistance(m_lightPathDistance);
+        refreshCameraPath();
+    }
+
     bool pathModified = false;
     if (ImGui::TreeNode("Control Points")) {
         for (size_t i = 0; i < m_lightPathSegments.size(); ++i) {
@@ -1049,11 +1166,16 @@ void Application::renderGui()
         rebuildLightPathSamples();
         uploadLightPathGeometry();
         ensureLightPathFollowerValid();
+        m_cameraPathDistance = wrapPathDistance(m_cameraPathDistance);
         if (!m_lights.empty() && !m_lightPathSamples.empty()) {
             const bool originalEnabled = m_lightPathEnabled;
             m_lightPathEnabled = true;
             updateLightPath(0.0f);
             m_lightPathEnabled = originalEnabled;
+        }
+        if (m_cameraPathEnabled) {
+            Trackball& camRef = activeTrackball();
+            updateCameraPath(0.0f, camRef);
         }
     }
 
