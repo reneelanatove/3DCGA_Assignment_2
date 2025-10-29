@@ -1,0 +1,59 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor/IDE settings
+.vscode/
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.iml
+
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+build.ninja
+rules.ninja
+Testing/
+install_manifest.txt
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exp
+*.pdb
+*.ilk
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug and temp files
+*.log
+*.tmp
+*.bak
+*.orig
+*~
+*.swp
+*.swo
+
+# ImGui config (optional to keep local UI prefs out of VCS)
+imgui.ini
