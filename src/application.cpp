@@ -194,7 +194,8 @@ class Application {
 public:
     Application()
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
-        , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
+        , m_texture(RESOURCE_ROOT "resources/rock_face_03_diffuse.png")
+        , m_normalMap(RESOURCE_ROOT "resources/rock_face_03_normal_map.png")
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
@@ -202,7 +203,7 @@ public:
             else if (action == GLFW_RELEASE)
                 onKeyReleased(key, mods);
         });
-        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/lucy_scene.obj");
+        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/plane.obj");
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -369,7 +370,7 @@ public:
             m_viewMatrix = camera.viewMatrix();
             m_projectionMatrix = camera.projectionMatrix();
 
-            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
+            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, bool useTexture) {
                 const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
                 const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
@@ -381,9 +382,16 @@ public:
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
-                if (mesh.hasTextureCoords()) {
+                if (useTexture) {
+                    // Bind diffuse texture
                     m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
+
+                    // Bind normal map texture
+                    m_normalMap.bind(GL_TEXTURE2);
+                    glUniform1i(m_defaultShader.getUniformLocation("normalMap"), 2);
+                    glUniform1i(m_defaultShader.getUniformLocation("useNormalMap"), m_useNormalMap);
+
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 } else {
@@ -417,17 +425,17 @@ public:
 
             // Main pass rendering
             for (GPUMesh& mesh : m_meshes) {
-                drawMeshWithModel(mesh, m_modelMatrix);
+                drawMeshWithModel(mesh, m_modelMatrix, true);
             }
 
             if (m_windmillBodyMesh) {
-                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f));
+                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), false);
             }
 
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
                 rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
+                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, false);
             }
 
             // Processes input and swaps the window buffer
@@ -526,6 +534,7 @@ private:
 
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
+    Texture m_normalMap;
     bool m_useMaterial { true };
 	bool m_useNormalMap{ false };
     bool m_shadows{ false };
