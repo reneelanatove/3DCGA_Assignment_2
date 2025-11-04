@@ -357,6 +357,9 @@ public:
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
                 const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
 
+
+
+                mesh.setMaterial(m_gpuMaterial);
                 m_defaultShader.bind();
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
@@ -365,7 +368,7 @@ public:
                     m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
-                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
+                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 } else {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
@@ -500,6 +503,7 @@ private:
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     bool m_useMaterial { true };
+	bool m_useNormalMap{ false };
     bool m_shadows{ false };
     bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
@@ -512,7 +516,7 @@ private:
     glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
-    float m_specularShininess { 32.0f };
+    float m_specularShininess { 0.0f };
     bool m_dayNightEnabled { true };
     bool m_dayNightAutoAdvance { true };
     float m_dayNightCycleDuration { 60.0f };
@@ -553,6 +557,14 @@ private:
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
 
+    Material m_gpuMaterial {
+        glm::vec3(0.8f, 0.8f, 0.8f),    // kd
+        glm::vec3(0.5f, 0.5f, 0.5f),    // ks
+        32.0f,                          // shininess
+        1.0f,                           // transparency
+        nullptr                         // kdTexture
+    };
+
     struct Viewpoint {
         std::string name;
         glm::vec3 lookAt { 0.0f };
@@ -568,6 +580,7 @@ private:
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
 	GLuint m_texShadow { 0 };
+    GLuint m_texNormal { 0 };
     GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
@@ -601,6 +614,7 @@ private:
     void initializeViews();
     Trackball& activeTrackball();
     void initializeShadowTexture();
+    void initializeNormalTexture();
     void resetActiveView();
     void storeActiveViewState();
     void initializeLightGeometry();
@@ -665,6 +679,15 @@ Trackball& Application::activeTrackball()
         m_activeViewIndex = m_views.size() - 1;
 
     return *m_trackball;
+}
+
+void Application::initializeNormalTexture() {
+    glGenTextures(1, &m_texNormal);
+
+    const int NORMALTEX_WIDTH = 1024;
+    const int NORMALTEX_HEIGHT = 1024;
+    
+
 }
 
 void Application::initializeShadowTexture() {
@@ -1828,6 +1851,14 @@ void Application::renderGui()
         ImGui::Text("Shadows");
         ImGui::Checkbox("Shadows", &m_shadows);
 		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
+		ImGui::Checkbox("Show Normal Map", &m_useNormalMap);
+
+		ImGui::Separator();
+        ImGui::Text("Material Textures");
+        ImGui::Checkbox("Use Material", &m_useMaterial);
+        ImGui::ColorEdit3("Kd", glm::value_ptr(m_gpuMaterial.kd));
+        ImGui::ColorEdit3("Ks", glm::value_ptr(m_gpuMaterial.ks));
+        ImGui::SliderFloat("Shininess", &m_gpuMaterial.shininess, 1.0f, 256.0f);
     }
 
     ImGui::End();
