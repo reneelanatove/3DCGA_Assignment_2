@@ -312,7 +312,9 @@ public:
             glClearDepth(1.0);
             glClear(GL_DEPTH_BUFFER_BIT);
 
-            for (GPUMesh& mesh : m_meshes) {
+            // Function for shadow pass of a mesh with a given model matrix
+            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
+                const glm::mat4 localMvp = lightMVP * modelMatrix;
                 // Bind the shader
                 m_shadowShader.bind();
                 // Set viewport size
@@ -321,10 +323,25 @@ public:
                 glViewport(0, 0, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT);
 
                 // .... HERE YOU MUST ADD THE CORRECT UNIFORMS FOR RENDERING THE SHADOW MAP
-                glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(lightMVP));
+                glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
 
                 // Execute draw command
                 mesh.draw(m_shadowShader);
+            };
+
+            // Shadow pass rendering
+            for (GPUMesh& mesh : m_meshes) {
+                drawMeshForShadow(mesh, m_modelMatrix);
+            }
+
+            if (m_windmillBodyMesh) {
+                drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f));
+            }
+
+            if (m_windmillRotorMesh) {
+                glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
+                rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
             }
 
 
@@ -396,11 +413,16 @@ public:
                 glUniform1f(m_defaultShader.getUniformLocation("sunIntensity"), m_currentSunIntensity);
             };
 
-            for (GPUMesh& mesh : m_meshes)
-                drawMeshWithModel(mesh, m_modelMatrix);
+            
 
-            if (m_windmillBodyMesh)
+            // Main pass rendering
+            for (GPUMesh& mesh : m_meshes) {
+                drawMeshWithModel(mesh, m_modelMatrix);
+            }
+
+            if (m_windmillBodyMesh) {
                 drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f));
+            }
 
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);

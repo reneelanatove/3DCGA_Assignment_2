@@ -36,6 +36,9 @@ uniform mat4 lightMVP;
 uniform sampler2D shadowMap;
 uniform bool pcf;
 
+// uniform bool normalMapping;
+// unifom sampler2D normalMap;
+
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec2 fragTexCoord;
@@ -45,6 +48,11 @@ layout(location = 0) out vec4 fragColor;
 void main()
 {
     vec3 normal = normalize(fragNormal);
+
+    // if (normalMapping) {
+    //     vec3 normalMapValue = texture(normalMap, fragTexCoord).xyz;
+    //     normal = normalize(normalMapValue * 2.0 - 1.0);
+    // }
 
     vec3 baseColor;
     if (hasTexCoords)
