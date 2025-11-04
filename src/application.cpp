@@ -203,6 +203,7 @@ public:
                 onKeyReleased(key, mods);
         });
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/lucy_scene.obj");
+        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/lucy_scene.obj");
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -211,6 +212,7 @@ public:
 
             ShaderBuilder shadowBuilder;
             shadowBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shadow_vert.glsl");
+            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
@@ -228,6 +230,7 @@ public:
             std::cerr << e.what() << std::endl;
         }
 
+        initializeShadowTexture();
         initializeShadowTexture();
         initializeViews();
         initializeLightGeometry();
@@ -369,10 +372,17 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
+                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 } else {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, m_texShadow);
+                glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
+				glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
+				glUniform1i(m_defaultShader.getUniformLocation("pcf"), m_pcf);
+				glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), 1, GL_FALSE, glm::value_ptr(lightMVP));
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, m_texShadow);
                 glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
@@ -385,6 +395,7 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
+
 
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
@@ -506,6 +517,9 @@ private:
 	bool m_useNormalMap{ false };
     bool m_shadows{ false };
     bool m_pcf{ false };
+	bool m_useNormalMap{ false };
+    bool m_shadows{ false };
+    bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
     std::optional<GPUMesh> m_windmillBodyMesh;
@@ -565,6 +579,14 @@ private:
         nullptr                         // kdTexture
     };
 
+    Material m_gpuMaterial {
+        glm::vec3(0.8f, 0.8f, 0.8f),    // kd
+        glm::vec3(0.5f, 0.5f, 0.5f),    // ks
+        32.0f,                          // shininess
+        1.0f,                           // transparency
+        nullptr                         // kdTexture
+    };
+
     struct Viewpoint {
         std::string name;
         glm::vec3 lookAt { 0.0f };
@@ -579,6 +601,9 @@ private:
     std::unique_ptr<Trackball> m_trackball;
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
+	GLuint m_texShadow { 0 };
+    GLuint m_texNormal { 0 };
+    GLuint m_framebuffer{ 0 };
 	GLuint m_texShadow { 0 };
     GLuint m_texNormal { 0 };
     GLuint m_framebuffer{ 0 };
@@ -613,6 +638,8 @@ private:
 
     void initializeViews();
     Trackball& activeTrackball();
+    void initializeShadowTexture();
+    void initializeNormalTexture();
     void initializeShadowTexture();
     void initializeNormalTexture();
     void resetActiveView();
@@ -679,6 +706,46 @@ Trackball& Application::activeTrackball()
         m_activeViewIndex = m_views.size() - 1;
 
     return *m_trackball;
+}
+
+void Application::initializeNormalTexture() {
+    glGenTextures(1, &m_texNormal);
+
+    const int NORMALTEX_WIDTH = 1024;
+    const int NORMALTEX_HEIGHT = 1024;
+    
+
+}
+
+void Application::initializeShadowTexture() {
+
+    // === Create Shadow Texture ===
+    glGenTextures(1, &m_texShadow);
+
+    const int SHADOWTEX_WIDTH = 1024;
+    const int SHADOWTEX_HEIGHT = 1024;
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, m_texShadow);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+    // Set behaviour for when texture coordinates are outside the [0, 1] range.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Set interpolation for texture sampling (GL_NEAREST for no interpolation).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // === Create framebuffer for extra texture ===
+    glGenFramebuffers(1, &m_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texShadow, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Application::initializeNormalTexture() {
@@ -1846,6 +1913,19 @@ void Application::renderGui()
         }
         ImGui::SliderFloat("Spot Cos Cutoff", &selectedLight.spotCosCutoff, 0.0f, 1.0f);
         ImGui::SliderFloat("Spot Softness", &selectedLight.spotSoftness, 0.0f, 1.0f);
+
+		ImGui::Separator();
+        ImGui::Text("Shadows");
+        ImGui::Checkbox("Shadows", &m_shadows);
+		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
+		ImGui::Checkbox("Show Normal Map", &m_useNormalMap);
+
+		ImGui::Separator();
+        ImGui::Text("Material Textures");
+        ImGui::Checkbox("Use Material", &m_useMaterial);
+        ImGui::ColorEdit3("Kd", glm::value_ptr(m_gpuMaterial.kd));
+        ImGui::ColorEdit3("Ks", glm::value_ptr(m_gpuMaterial.ks));
+        ImGui::SliderFloat("Shininess", &m_gpuMaterial.shininess, 1.0f, 256.0f);
 
 		ImGui::Separator();
         ImGui::Text("Shadows");
