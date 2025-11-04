@@ -17,6 +17,10 @@ uniform vec3 viewPosition;
 uniform vec3 specularColor;
 uniform float specularStrength;
 uniform float specularShininess;
+uniform vec3 ambientLight;
+uniform vec3 sunDirection;
+uniform vec3 sunColor;
+uniform float sunIntensity;
 
 const int MAX_LIGHTS = 8;
 uniform int numLights;
@@ -45,16 +49,31 @@ void main()
     else
         baseColor = customDiffuseColor;
 
-    if (shadingMode == 0 || numLights <= 0) {
+    if (shadingMode == 0) {
         fragColor = vec4(baseColor, 1);
         return;
     }
 
     vec3 viewDir = normalize(viewPosition - fragPosition);
 
-    vec3 colorAccum = vec3(0);
+    const float epsilon = 1e-4;
+    vec3 colorAccum = ambientLight * baseColor;
     vec3 specAccum = vec3(0);
     float exponent = specularShininess > 0.0 ? specularShininess : shininess;
+    if (sunIntensity > epsilon && length(sunColor) > epsilon) {
+        vec3 dirToSun = normalize(-sunDirection);
+        float sunDiff = max(dot(normal, dirToSun), 0.0);
+        vec3 sunContribution = baseColor * sunColor * sunIntensity * sunDiff;
+        colorAccum += sunContribution;
+
+        if (shadingMode == 2 && sunDiff > 0.0) {
+            vec3 sunReflect = reflect(-dirToSun, normal);
+            float sunSpec = max(dot(sunReflect, viewDir), 0.0);
+            sunSpec = pow(sunSpec, exponent);
+            specAccum += sunColor * sunIntensity * sunSpec;
+        }
+    }
+
     int lightCount = min(numLights, MAX_LIGHTS);
     for (int i = 0; i < lightCount; ++i) {
         vec3 lightDir = normalize(lightPositions[i] - fragPosition);
@@ -78,6 +97,9 @@ void main()
     }
 
     vec3 finalColor = colorAccum;
+    if (lightCount == 0 && sunIntensity <= epsilon && length(ambientLight) <= epsilon)
+        finalColor = baseColor;
+
     if (shadingMode == 2) {
         vec3 specColor = specularColor * specularStrength;
         if (useMaterial)

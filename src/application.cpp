@@ -31,6 +31,7 @@ DISABLE_WARNINGS_POP()
 #include <memory>
 #include <optional>
 #include <vector>
+#include <random>
 
 namespace {
 
@@ -229,10 +230,16 @@ public:
 
         initializeViews();
         initializeLightGeometry();
+        initializeWindArrowGeometry();
+        initializeWindParticleGeometry();
+        updateWindOrientation();
+        updateWindGusts(0.0f);
+        uploadWindParticles();
         resetLights();
         initializeLightPath();
         sanitizeWindmillParams();
         rebuildWindmillMesh();
+        updateDayNightCycle(0.0f);
         m_lastFrameTime = glfwGetTime();
     }
 
@@ -246,6 +253,14 @@ public:
             glDeleteBuffers(1, &m_lightPathVbo);
         if (m_lightPathVao != 0)
             glDeleteVertexArrays(1, &m_lightPathVao);
+        if (m_windArrowVbo != 0)
+            glDeleteBuffers(1, &m_windArrowVbo);
+        if (m_windArrowVao != 0)
+            glDeleteVertexArrays(1, &m_windArrowVao);
+        if (m_windParticleVbo != 0)
+            glDeleteBuffers(1, &m_windParticleVbo);
+        if (m_windParticleVao != 0)
+            glDeleteVertexArrays(1, &m_windParticleVao);
     }
 
     void update()
@@ -259,10 +274,13 @@ public:
             float deltaTime = static_cast<float>(currentTime - m_lastFrameTime);
             m_lastFrameTime = currentTime;
 
+            updateDayNightCycle(deltaTime);
+            updateWindGusts(deltaTime);
             Trackball& camera = activeTrackball();
             updateCameraPath(deltaTime, camera);
             updateLightPath(deltaTime);
-            const float rotationSpeedRad = glm::radians(m_windmillParams.rotationSpeedDegPerSec);
+            updateWindParticles(deltaTime);
+            const float rotationSpeedRad = glm::radians(m_windmillParams.rotationSpeedDegPerSec * m_windStrength);
             if (rotationSpeedRad != 0.0f) {
                 m_windmillRotationAngle += rotationSpeedRad * deltaTime;
                 const float fullTurn = glm::two_pi<float>();
@@ -317,6 +335,10 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
+                glUniform3fv(m_defaultShader.getUniformLocation("ambientLight"), 1, glm::value_ptr(m_currentAmbientColor));
+                glUniform3fv(m_defaultShader.getUniformLocation("sunDirection"), 1, glm::value_ptr(m_currentSunDirection));
+                glUniform3fv(m_defaultShader.getUniformLocation("sunColor"), 1, glm::value_ptr(m_currentSunColor));
+                glUniform1f(m_defaultShader.getUniformLocation("sunIntensity"), m_currentSunIntensity);
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
             };
@@ -330,11 +352,13 @@ public:
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
                 rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshWithModel(*m_windmillRotorMesh, rotorModel);
+                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
             }
 
             // Processes input and swaps the window buffer
             renderLightPath();
+            renderWindParticles();
+            renderWindArrow();
             renderLightMarkers();
             m_window.swapBuffers();
         }
@@ -399,6 +423,13 @@ private:
         GLuint textureId { 0 };
     };
 
+    struct Particle {
+        glm::vec3 position { 0.0f };
+        glm::vec3 velocity { 0.0f };
+        float lifetime { 1.0f };
+        float age { 0.0f };
+    };
+
     struct BezierSegment {
         glm::vec3 p0;
         glm::vec3 p1;
@@ -432,6 +463,43 @@ private:
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
     float m_specularShininess { 32.0f };
+    bool m_dayNightEnabled { true };
+    bool m_dayNightAutoAdvance { true };
+    float m_dayNightCycleDuration { 60.0f };
+    float m_timeOfDay01 { 0.25f };
+    glm::vec3 m_dayAmbientColor { 0.35f, 0.33f, 0.38f };
+    glm::vec3 m_nightAmbientColor { 0.03f, 0.05f, 0.12f };
+    glm::vec3 m_daySunColor { 1.0f, 0.95f, 0.85f };
+    glm::vec3 m_nightSunColor { 0.2f, 0.25f, 0.4f };
+    glm::vec3 m_currentAmbientColor { 0.3f, 0.3f, 0.3f };
+    glm::vec3 m_currentSunDirection { 0.0f, -1.0f, 0.2f };
+    glm::vec3 m_currentSunColor { 0.9f, 0.85f, 0.8f };
+    float m_currentSunIntensity { 1.0f };
+    float m_windDirectionAngleDeg { 0.0f };
+    glm::vec3 m_windDirection { 0.0f, 0.0f, 1.0f };
+    bool m_windGustsEnabled { true };
+    float m_windStrength { 1.0f };
+    float m_windBaseStrength { 0.7f };
+    float m_windGustAmplitude { 0.6f };
+    float m_windGustFrequency { 0.18f };
+    float m_windSecondaryFrequency { 0.05f };
+    float m_windTime { 0.0f };
+    glm::mat4 m_windmillOrientation { 1.0f };
+    GLuint m_windArrowVao { 0 };
+    GLuint m_windArrowVbo { 0 };
+    GLsizei m_windArrowVertexCount { 0 };
+    float m_windArrowScale { 1.8f };
+    std::vector<Particle> m_windParticles;
+    GLuint m_windParticleVao { 0 };
+    GLuint m_windParticleVbo { 0 };
+    GLsizei m_windParticleCount { 0 };
+    float m_windParticleSpawnRate { 45.0f };
+    float m_windParticleLifetime { 3.5f };
+    float m_windParticleSize { 8.0f };
+    float m_particleSpawnAccumulator { 0.0f };
+    size_t m_maxWindParticles { 400 };
+    std::mt19937 m_rng { 1337u };
+    std::uniform_real_distribution<float> m_uniform01 { 0.0f, 1.0f };
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
 
@@ -503,6 +571,16 @@ private:
     void uploadLightsToShader();
     void rebuildWindmillMesh();
     void sanitizeWindmillParams();
+    void updateDayNightCycle(float deltaTime);
+    void updateWindOrientation();
+    void initializeWindArrowGeometry();
+    void renderWindArrow();
+    void initializeWindParticleGeometry();
+    void updateWindGusts(float deltaTime);
+    void updateWindParticles(float deltaTime);
+    void uploadWindParticles();
+    void renderWindParticles();
+    Particle spawnWindParticle();
 };
 
 void Application::initializeViews()
@@ -625,6 +703,60 @@ void Application::initializeLightGeometry()
 
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void Application::initializeWindArrowGeometry()
+{
+    if (m_windArrowVbo != 0)
+        glDeleteBuffers(1, &m_windArrowVbo);
+    if (m_windArrowVao != 0)
+        glDeleteVertexArrays(1, &m_windArrowVao);
+
+    const std::array<glm::vec3, 6> arrowVertices = {
+        glm::vec3(0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f),
+        glm::vec3(0.12f, 0.0f, 0.85f),
+        glm::vec3(0.0f, 0.0f, 1.0f),
+        glm::vec3(-0.12f, 0.0f, 0.85f)
+    };
+
+    glGenVertexArrays(1, &m_windArrowVao);
+    glGenBuffers(1, &m_windArrowVbo);
+
+    glBindVertexArray(m_windArrowVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_windArrowVbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(arrowVertices.size() * sizeof(glm::vec3)), arrowVertices.data(), GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void*>(0));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    m_windArrowVertexCount = static_cast<GLsizei>(arrowVertices.size());
+}
+
+void Application::initializeWindParticleGeometry()
+{
+    if (m_windParticleVbo != 0)
+        glDeleteBuffers(1, &m_windParticleVbo);
+    if (m_windParticleVao != 0)
+        glDeleteVertexArrays(1, &m_windParticleVao);
+
+    glGenVertexArrays(1, &m_windParticleVao);
+    glGenBuffers(1, &m_windParticleVbo);
+
+    glBindVertexArray(m_windParticleVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_windParticleVbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_maxWindParticles * sizeof(glm::vec3)), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void*>(0));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    m_windParticleCount = 0;
 }
 
 glm::vec3 Application::evaluateBezier(const BezierSegment& segment, float t) const
@@ -889,6 +1021,223 @@ void Application::updateCameraPath(float deltaTime, Trackball& camera)
     camera.setCamera(desiredTarget, eulerAngles, distance);
 }
 
+void Application::updateDayNightCycle(float deltaTime)
+{
+    if (!m_dayNightEnabled) {
+        m_currentAmbientColor = glm::vec3(0.0f);
+        m_currentSunDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+        m_currentSunColor = glm::vec3(0.0f);
+        m_currentSunIntensity = 0.0f;
+        return;
+    }
+
+    if (m_dayNightAutoAdvance && m_dayNightCycleDuration > 0.0f) {
+        float advance = deltaTime / m_dayNightCycleDuration;
+        m_timeOfDay01 = std::fmod(m_timeOfDay01 + advance, 1.0f);
+        if (m_timeOfDay01 < 0.0f)
+            m_timeOfDay01 += 1.0f;
+    } else {
+        m_timeOfDay01 = std::clamp(m_timeOfDay01, 0.0f, 1.0f);
+    }
+
+    const float sunAngle = glm::two_pi<float>() * m_timeOfDay01 - glm::half_pi<float>();
+    glm::vec3 sunDirection = glm::normalize(glm::vec3(std::cos(sunAngle), -std::sin(sunAngle), 0.25f));
+    float daylightFactor = glm::clamp(-sunDirection.y, 0.0f, 1.0f);
+    float easedDaylight = glm::smoothstep(0.0f, 1.0f, daylightFactor);
+
+    m_currentSunDirection = sunDirection;
+    m_currentSunIntensity = easedDaylight;
+    m_currentAmbientColor = glm::mix(m_nightAmbientColor, m_dayAmbientColor, easedDaylight);
+    m_currentSunColor = glm::mix(m_nightSunColor, m_daySunColor, easedDaylight) * easedDaylight;
+}
+
+void Application::updateWindOrientation()
+{
+    float yawRad = glm::radians(m_windDirectionAngleDeg);
+    glm::vec3 direction = glm::vec3(std::sin(yawRad), 0.0f, std::cos(yawRad));
+    if (glm::dot(direction, direction) < 1e-6f)
+        direction = glm::vec3(0.0f, 0.0f, 1.0f);
+    m_windDirection = glm::normalize(direction);
+
+    glm::vec3 facing = -m_windDirection;
+    if (glm::dot(facing, facing) < 1e-6f)
+        facing = glm::vec3(0.0f, 0.0f, 1.0f);
+    constexpr float modelForwardYawOffsetDeg = -90.0f;
+    float yaw = std::atan2(facing.x, facing.z) + glm::radians(modelForwardYawOffsetDeg);    
+    m_windmillOrientation = glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+void Application::updateWindGusts(float deltaTime)
+{
+    if (!m_windGustsEnabled) {
+        m_windStrength = std::max(m_windBaseStrength, 0.0f);
+        return;
+    }
+
+    m_windTime += deltaTime;
+
+    const float primaryPhase = glm::two_pi<float>() * m_windGustFrequency * m_windTime;
+    const float secondaryPhase = glm::two_pi<float>() * m_windSecondaryFrequency * (m_windTime + 2.37f);
+    const float blend = 0.5f * std::sin(primaryPhase) + 0.5f * std::sin(secondaryPhase);
+    const float gustNormalized = 0.5f * (blend + 1.0f); // 0..1
+    const float targetStrength = std::max(0.0f, m_windBaseStrength + m_windGustAmplitude * gustNormalized);
+
+    if (deltaTime > 0.0f) {
+        const float smoothing = std::clamp(deltaTime * 2.0f, 0.0f, 1.0f);
+        m_windStrength = glm::mix(m_windStrength, targetStrength, smoothing);
+    } else {
+        m_windStrength = targetStrength;
+    }
+
+    m_windStrength = std::clamp(m_windStrength, 0.05f, 4.0f);
+}
+
+Application::Particle Application::spawnWindParticle()
+{
+    Particle particle;
+    particle.age = 0.0f;
+    particle.lifetime = m_windParticleLifetime * (0.6f + 0.8f * m_uniform01(m_rng));
+
+    const float radius = 0.9f;
+    const float angle = glm::two_pi<float>() * m_uniform01(m_rng);
+    const float distance = std::sqrt(m_uniform01(m_rng)) * radius;
+    const glm::vec3 offset(distance * std::cos(angle), 0.0f, distance * std::sin(angle));
+    const float groundHeight = m_windmillParams.baseSize.y;
+    particle.position = glm::vec3(0.0f, groundHeight + 0.15f, 0.0f) + offset;
+
+    glm::vec3 lateral = glm::cross(m_windDirection, glm::vec3(0.0f, 1.0f, 0.0f));
+    if (glm::dot(lateral, lateral) < 1e-6f)
+        lateral = glm::vec3(1.0f, 0.0f, 0.0f);
+    lateral = glm::normalize(lateral);
+
+    const float lateralScale = (m_uniform01(m_rng) - 0.5f) * 0.8f;
+    const glm::vec3 gustVelocity = m_windDirection * (1.2f + 1.6f * m_windStrength);
+    const glm::vec3 upward { 0.0f, 0.35f + 0.35f * m_uniform01(m_rng), 0.0f };
+    particle.velocity = gustVelocity + lateral * lateralScale + upward;
+
+    return particle;
+}
+
+void Application::updateWindParticles(float deltaTime)
+{
+    if (deltaTime <= 0.0f)
+        return;
+
+    const float spawnRate = std::max(0.0f, m_windParticleSpawnRate * m_windStrength);
+    m_particleSpawnAccumulator += spawnRate * deltaTime;
+
+    const size_t spawnCount = static_cast<size_t>(m_particleSpawnAccumulator);
+    m_particleSpawnAccumulator -= static_cast<float>(spawnCount);
+
+    for (size_t i = 0; i < spawnCount && m_windParticles.size() < m_maxWindParticles; ++i)
+        m_windParticles.push_back(spawnWindParticle());
+
+    const glm::vec3 upwardAcceleration { 0.0f, 0.25f, 0.0f };
+    const float alignmentRate = std::clamp(deltaTime * 0.5f, 0.0f, 1.0f);
+    const glm::vec3 targetVelocity = m_windDirection * (1.5f * m_windStrength);
+
+    for (Particle& particle : m_windParticles) {
+        particle.age += deltaTime;
+        particle.velocity += upwardAcceleration * deltaTime;
+        particle.velocity = glm::mix(particle.velocity, targetVelocity, alignmentRate);
+        particle.position += particle.velocity * deltaTime;
+    }
+
+    m_windParticles.erase(
+        std::remove_if(
+            m_windParticles.begin(),
+            m_windParticles.end(),
+            [](const Particle& particle) {
+                return particle.age >= particle.lifetime;
+            }),
+        m_windParticles.end());
+
+    uploadWindParticles();
+}
+
+void Application::uploadWindParticles()
+{
+    if (m_windParticleVbo == 0) {
+        m_windParticleCount = 0;
+        return;
+    }
+
+    if (m_windParticles.empty()) {
+        m_windParticleCount = 0;
+        return;
+    }
+
+    std::vector<glm::vec3> positions;
+    positions.reserve(m_windParticles.size());
+    for (const Particle& particle : m_windParticles)
+        positions.push_back(particle.position);
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_windParticleVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(positions.size() * sizeof(glm::vec3)),
+        positions.data(),
+        GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    m_windParticleCount = static_cast<GLsizei>(positions.size());
+}
+
+void Application::renderWindParticles()
+{
+    if (m_windParticleVao == 0 || m_windParticleCount == 0)
+        return;
+
+    m_lightShader.bind();
+    glBindVertexArray(m_windParticleVao);
+
+    const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix;
+    glUniformMatrix4fv(m_lightShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+    const glm::vec3 particleColor { 0.8f, 0.85f, 0.9f };
+    glUniform3fv(m_lightShader.getUniformLocation("markerColor"), 1, glm::value_ptr(particleColor));
+
+    const float clampedSize = std::max(1.0f, m_windParticleSize);
+    glPointSize(clampedSize);
+    glDrawArrays(GL_POINTS, 0, m_windParticleCount);
+    glPointSize(1.0f);
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void Application::renderWindArrow()
+{
+    if (m_windArrowVao == 0 || m_windArrowVertexCount == 0)
+        return;
+
+    m_lightShader.bind();
+    glBindVertexArray(m_windArrowVao);
+
+    const float windYaw = std::atan2(m_windDirection.x, m_windDirection.z);
+    const float stackHeight = m_windmillParams.baseSize.y + m_windmillParams.towerSize.y + 0.8f;
+    const float strength = glm::clamp(m_windStrength, 0.1f, 3.5f);
+    const float scaleFactor = m_windArrowScale * (0.7f + 0.3f * strength);
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, stackHeight, 0.0f));
+    model = model * glm::rotate(glm::mat4(1.0f), windYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+    model = model * glm::scale(glm::mat4(1.0f), glm::vec3(scaleFactor));
+
+    const glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
+    glUniformMatrix4fv(m_lightShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+
+    const glm::vec3 calmColor { 0.25f, 0.65f, 1.0f };
+    const glm::vec3 gustColor { 1.0f, 0.85f, 0.2f };
+    const float gustBlend = glm::clamp((strength - 1.0f) / 2.0f, 0.0f, 1.0f);
+    const glm::vec3 arrowColor = glm::mix(calmColor, gustColor, gustBlend);
+    glUniform3fv(m_lightShader.getUniformLocation("markerColor"), 1, glm::value_ptr(arrowColor));
+
+    glLineWidth(3.0f);
+    glDrawArrays(GL_LINES, 0, m_windArrowVertexCount);
+    glLineWidth(1.0f);
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
 void Application::renderLightPath()
 {
     if (!m_lightPathShowCurve || m_lightPathVao == 0 || m_lightPathVertexCount < 2)
@@ -1044,6 +1393,77 @@ void Application::renderGui()
     ImGui::ColorEdit3("Specular colour", glm::value_ptr(m_specularColor));
     ImGui::SliderFloat("Specular strength", &m_specularStrength, 0.0f, 5.0f);
     ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
+
+    ImGui::Separator();
+    ImGui::Text("Day / Night Cycle");
+    if (ImGui::Checkbox("Enable day-night cycle", &m_dayNightEnabled))
+        updateDayNightCycle(0.0f);
+    if (ImGui::Checkbox("Auto advance time", &m_dayNightAutoAdvance))
+        updateDayNightCycle(0.0f);
+    if (ImGui::SliderFloat("Cycle duration (s)", &m_dayNightCycleDuration, 5.0f, 240.0f, "%.1f")) {
+        m_dayNightCycleDuration = std::max(m_dayNightCycleDuration, 1.0f);
+        updateDayNightCycle(0.0f);
+    }
+
+    bool timeModified = false;
+    if (m_dayNightAutoAdvance) {
+        ImGui::BeginDisabled();
+        ImGui::SliderFloat("Time of day", &m_timeOfDay01, 0.0f, 1.0f, "%.2f");
+        ImGui::EndDisabled();
+    } else {
+        timeModified = ImGui::SliderFloat("Time of day", &m_timeOfDay01, 0.0f, 1.0f, "%.2f");
+    }
+    if (timeModified)
+        updateDayNightCycle(0.0f);
+
+    float clockHours = m_timeOfDay01 * 24.0f;
+    int displayHour = static_cast<int>(std::floor(clockHours)) % 24;
+    int displayMinute = static_cast<int>(std::round((clockHours - std::floor(clockHours)) * 60.0f)) % 60;
+    ImGui::Text("Sun intensity: %.2f", static_cast<double>(m_currentSunIntensity));
+    ImGui::Text("Approx time: %02d:%02d", displayHour, displayMinute);
+
+    if (ImGui::TreeNode("Cycle colours")) {
+        bool paletteChanged = false;
+        paletteChanged |= ImGui::ColorEdit3("Day ambient", glm::value_ptr(m_dayAmbientColor));
+        paletteChanged |= ImGui::ColorEdit3("Night ambient", glm::value_ptr(m_nightAmbientColor));
+        paletteChanged |= ImGui::ColorEdit3("Day sun", glm::value_ptr(m_daySunColor));
+        paletteChanged |= ImGui::ColorEdit3("Night sun", glm::value_ptr(m_nightSunColor));
+        if (paletteChanged)
+            updateDayNightCycle(0.0f);
+        ImGui::TreePop();
+    }
+    ImGui::Text("Ambient: (%.2f, %.2f, %.2f)",
+        static_cast<double>(m_currentAmbientColor.x),
+        static_cast<double>(m_currentAmbientColor.y),
+        static_cast<double>(m_currentAmbientColor.z));
+
+    ImGui::Separator();
+    ImGui::Text("Wind");
+    if (ImGui::SliderFloat("Wind heading (deg)", &m_windDirectionAngleDeg, -180.0f, 180.0f, "%.0f deg"))
+        updateWindOrientation();
+    ImGui::Text("Direction (x,z): (%.2f, %.2f)",
+        static_cast<double>(m_windDirection.x),
+        static_cast<double>(m_windDirection.z));
+    ImGui::Checkbox("Enable gusts", &m_windGustsEnabled);
+    if (ImGui::SliderFloat("Base strength", &m_windBaseStrength, 0.0f, 2.5f))
+        m_windBaseStrength = std::max(m_windBaseStrength, 0.0f);
+    if (ImGui::SliderFloat("Gust amplitude", &m_windGustAmplitude, 0.0f, 2.0f))
+        m_windGustAmplitude = std::max(m_windGustAmplitude, 0.0f);
+    if (ImGui::SliderFloat("Gust frequency", &m_windGustFrequency, 0.02f, 0.6f))
+        m_windGustFrequency = std::max(m_windGustFrequency, 0.01f);
+    if (ImGui::SliderFloat("Secondary frequency", &m_windSecondaryFrequency, 0.01f, 0.3f))
+        m_windSecondaryFrequency = std::max(m_windSecondaryFrequency, 0.005f);
+    ImGui::Text("Strength: %.2f", static_cast<double>(m_windStrength));
+    if (ImGui::SliderFloat("Arrow scale", &m_windArrowScale, 0.5f, 3.0f))
+        m_windArrowScale = std::clamp(m_windArrowScale, 0.2f, 5.0f);
+    if (ImGui::SliderFloat("Particle spawn rate", &m_windParticleSpawnRate, 0.0f, 120.0f))
+        m_windParticleSpawnRate = std::max(m_windParticleSpawnRate, 0.0f);
+    if (ImGui::SliderFloat("Particle lifetime", &m_windParticleLifetime, 0.5f, 6.0f))
+        m_windParticleLifetime = std::max(m_windParticleLifetime, 0.1f);
+    if (ImGui::SliderFloat("Particle size", &m_windParticleSize, 2.0f, 24.0f))
+        m_windParticleSize = std::max(m_windParticleSize, 1.0f);
+    ImGui::Text("Active particles: %zu", m_windParticles.size());
+    ImGui::TextUnformatted("Arrow and blades point along the wind heading.");
 
     ImGui::Separator();
     ImGui::Text("Windmill");
