@@ -54,7 +54,7 @@ void main()
         normal = normalize(normalMapValue * 2.0 - 1.0);
     }
 
-    vec3 baseColor;
+    vec3 baseColor = vec3(0.0);
     if (hasTexCoords)
         baseColor = texture(colorMap, fragTexCoord).rgb;
     else if (useMaterial)

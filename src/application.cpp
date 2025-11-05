@@ -215,6 +215,11 @@ public:
             shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
+            ShaderBuilder envBuilder;
+            envBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/env_vert.glsl");
+            envBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/env_frag.glsl");
+            m_envShader = envBuilder.build();
+
             ShaderBuilder lightBuilder;
             lightBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/light_marker_vert.glsl");
             lightBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/light_marker_frag.glsl");
@@ -370,6 +375,28 @@ public:
             m_viewMatrix = camera.viewMatrix();
             m_projectionMatrix = camera.projectionMatrix();
 
+            if (m_useEnvMap) {
+                glDepthFunc(GL_LEQUAL);
+                glDepthMask(GL_FALSE);
+
+                m_envShader.bind();
+
+                glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(m_viewMatrix));
+                glm::mat4 vp = m_projectionMatrix * viewNoTranslation;
+
+                glUniformMatrix4fv(m_envShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(vp));
+
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+                glUniform1i(m_envShader.getUniformLocation("skybox"), 0);
+
+                glBindVertexArray(m_envVao);
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+
+                glDepthMask(GL_TRUE);
+                glDepthFunc(GL_LESS);
+            }
+
             auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, bool useTexture) {
                 const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
@@ -382,6 +409,7 @@ public:
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
+
                 if (useTexture) {
                     // Bind diffuse texture
                     m_texture.bind(GL_TEXTURE0);
@@ -491,7 +519,7 @@ private:
     // Shader for default rendering and for depth rendering
     Shader m_defaultShader;
     Shader m_shadowShader;
-
+    Shader m_envShader;
     Shader m_lightShader;
 
     struct Light {
@@ -535,8 +563,13 @@ private:
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     Texture m_normalMap;
+    GLuint m_envTexture;
+    GLuint m_envVao { 0 };
+    GLuint m_envVbo { 0 };
+
     bool m_useMaterial { true };
 	bool m_useNormalMap{ false };
+    bool m_useEnvMap { false };
     bool m_shadows{ false };
     bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
@@ -613,7 +646,6 @@ private:
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
 	GLuint m_texShadow { 0 };
-    GLuint m_texNormal { 0 };
     GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
@@ -647,7 +679,7 @@ private:
     void initializeViews();
     Trackball& activeTrackball();
     void initializeShadowTexture();
-    void initializeNormalTexture();
+    void initializeEnvTexture();
     void resetActiveView();
     void storeActiveViewState();
     void initializeLightGeometry();
@@ -714,13 +746,88 @@ Trackball& Application::activeTrackball()
     return *m_trackball;
 }
 
-void Application::initializeNormalTexture() {
-    glGenTextures(1, &m_texNormal);
+void Application::initializeEnvTexture() {       // Initialize env map textures
+    glGenTextures(1, &m_envTexture);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
 
-    const int NORMALTEX_WIDTH = 1024;
-    const int NORMALTEX_HEIGHT = 1024;
-    
+    const std::vector<std::string> faces = {
+        RESOURCE_ROOT "resources/universe_skybox/right.jpg",
+        RESOURCE_ROOT "resources/universe_skybox/left.jpg",
+        RESOURCE_ROOT "resources/universe_skybox/top.jpg",
+        RESOURCE_ROOT "resources/universe_skybox/bottom.jpg",
+        RESOURCE_ROOT "resources/universe_skybox/front.jpg",
+        RESOURCE_ROOT "resources/universe_skybox/back.jpg"
+    };
 
+    for (size_t i = 0; i < faces.size(); i++) {
+        Image img(faces[i]);
+        if (!img.get_data()) {
+            std::cerr << "Failed to load texture: " << faces[i] << std::endl;
+            continue;
+        }
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, img.width, img.height, 0, GL_RGB, GL_UNSIGNED_BYTE, img.get_data());
+    }
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    // --- Create a cube VAO/VBO for the skybox ---
+    float skyboxVertices[] = {
+        // positions          
+        -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        -1.0f,  1.0f, -1.0f,
+        1.0f,  1.0f, -1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+        1.0f, -1.0f,  1.0f
+    };
+
+    glGenVertexArrays(1, &m_envVao);
+    glGenBuffers(1, &m_envVbo);
+    glBindVertexArray(m_envVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_envVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
 }
 
 void Application::initializeShadowTexture() {
@@ -1885,6 +1992,7 @@ void Application::renderGui()
         ImGui::Checkbox("Shadows", &m_shadows);
 		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
 		ImGui::Checkbox("Show Normal Map", &m_useNormalMap);
+        ImGui::Checkbox("Use Environment Map", &m_useEnvMap);
 
 		ImGui::Separator();
         ImGui::Text("Material Textures");
