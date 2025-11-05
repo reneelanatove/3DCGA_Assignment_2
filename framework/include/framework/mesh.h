@@ -24,6 +24,10 @@ struct Material {
 	glm::vec3 ks{ 0.0f };
 	float shininess{ 1.0f };
 	float transparency{ 1.0f };
+	// Parameters for physically based shading.
+	float metallic{ 0.0f };
+	float roughness{ 0.5f };
+	float ambientOcclusion{ 1.0f };
 
 	// Optional texture that replaces kd; use as follows:
 	// 

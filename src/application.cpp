@@ -60,6 +60,44 @@ Mesh createBoxMesh(const glm::vec3& size)
     mesh.triangles.reserve(12);
 
     const glm::vec3 half = size * 0.5f;
+    const auto safeDiv = [](float numerator, float denom) -> float {
+        return denom > 1e-6f ? numerator / denom : 0.0f;
+    };
+    const auto computeUv = [&](std::size_t faceIndex, const glm::vec3& position) -> glm::vec2 {
+        float u = 0.0f;
+        float v = 0.0f;
+        switch (faceIndex) {
+        case 0: // Front
+            u = safeDiv(position.x + half.x, size.x);
+            v = safeDiv(position.y + half.y, size.y);
+            break;
+        case 1: // Back
+            u = safeDiv(half.x - position.x, size.x);
+            v = safeDiv(position.y + half.y, size.y);
+            break;
+        case 2: // Left
+            u = safeDiv(position.z + half.z, size.z);
+            v = safeDiv(position.y + half.y, size.y);
+            break;
+        case 3: // Right
+            u = safeDiv(half.z - position.z, size.z);
+            v = safeDiv(position.y + half.y, size.y);
+            break;
+        case 4: // Top
+            u = safeDiv(position.x + half.x, size.x);
+            v = safeDiv(half.z - position.z, size.z);
+            break;
+        case 5: // Bottom
+            u = safeDiv(position.x + half.x, size.x);
+            v = safeDiv(position.z + half.z, size.z);
+            break;
+        default:
+            break;
+        }
+        u = std::clamp(u, 0.0f, 1.0f);
+        v = std::clamp(v, 0.0f, 1.0f);
+        return glm::vec2(u, v);
+    };
     const std::array<glm::vec3, 8> corners = {
         glm::vec3(-half.x, -half.y, -half.z),
         glm::vec3(half.x, -half.y, -half.z),
@@ -97,7 +135,7 @@ Mesh createBoxMesh(const glm::vec3& size)
             Vertex vertex;
             vertex.position = corners[indices[i]];
             vertex.normal = normal;
-            vertex.texCoord = glm::vec2(0.0f);
+            vertex.texCoord = computeUv(face, vertex.position);
             mesh.vertices.push_back(vertex);
         }
         mesh.triangles.emplace_back(glm::uvec3(baseIndex + 0, baseIndex + 1, baseIndex + 2));
@@ -107,6 +145,9 @@ Mesh createBoxMesh(const glm::vec3& size)
     mesh.material.kd = glm::vec3(0.8f);
     mesh.material.ks = glm::vec3(0.2f);
     mesh.material.shininess = 32.0f;
+    mesh.material.metallic = 0.0f;
+    mesh.material.roughness = 0.6f;
+    mesh.material.ambientOcclusion = 1.0f;
 
     return mesh;
 }
@@ -180,10 +221,16 @@ WindmillMeshes buildWindmillMeshes(const WindmillParameters& params)
     result.body.material.kd = params.structureColor;
     result.body.material.ks = glm::vec3(0.2f);
     result.body.material.shininess = 32.0f;
+    result.body.material.metallic = 1.0f;
+    result.body.material.roughness = 0.75f;
+    result.body.material.ambientOcclusion = 1.0f;
 
     result.rotor.material.kd = params.structureColor;
     result.rotor.material.ks = glm::vec3(0.2f);
     result.rotor.material.shininess = 32.0f;
+    result.rotor.material.metallic = 1.0f;
+    result.rotor.material.roughness = 0.75f;
+    result.rotor.material.ambientOcclusion = 1.0f;
 
     return result;
 }
@@ -195,6 +242,7 @@ public:
     Application()
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
         , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
+        , m_windmillTexture(RESOURCE_ROOT "resources/rusty_metal_sheet_4k/textures/rusty_metal_sheet_diff_4k.jpg")
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
@@ -311,7 +359,7 @@ public:
             m_viewMatrix = camera.viewMatrix();
             m_projectionMatrix = camera.projectionMatrix();
 
-            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
+            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, Texture* albedoTexture) {
                 const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
                 const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
@@ -320,11 +368,12 @@ public:
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
-                if (mesh.hasTextureCoords()) {
-                    m_texture.bind(GL_TEXTURE0);
+                const bool useTexture = (albedoTexture != nullptr) && mesh.hasTextureCoords();
+                if (useTexture) {
+                    albedoTexture->bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
-                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
+                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 } else {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
@@ -335,6 +384,10 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
+                glUniform3fv(m_defaultShader.getUniformLocation("pbrBaseColor"), 1, glm::value_ptr(m_pbrBaseColor));
+                glUniform1f(m_defaultShader.getUniformLocation("pbrMetallic"), std::clamp(m_pbrMetallic, 0.0f, 1.0f));
+                glUniform1f(m_defaultShader.getUniformLocation("pbrRoughness"), std::clamp(m_pbrRoughness, 0.04f, 1.0f));
+                glUniform1f(m_defaultShader.getUniformLocation("pbrAo"), std::clamp(m_pbrAo, 0.0f, 1.0f));
                 glUniform3fv(m_defaultShader.getUniformLocation("ambientLight"), 1, glm::value_ptr(m_currentAmbientColor));
                 glUniform3fv(m_defaultShader.getUniformLocation("sunDirection"), 1, glm::value_ptr(m_currentSunDirection));
                 glUniform3fv(m_defaultShader.getUniformLocation("sunColor"), 1, glm::value_ptr(m_currentSunColor));
@@ -344,15 +397,15 @@ public:
             };
 
             for (GPUMesh& mesh : m_meshes)
-                drawMeshWithModel(mesh, m_modelMatrix);
+                drawMeshWithModel(mesh, m_modelMatrix, &m_texture);
 
             if (m_windmillBodyMesh)
-                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f));
+                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), &m_windmillTexture);
 
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
                 rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
+                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, &m_windmillTexture);
             }
 
             // Processes input and swaps the window buffer
@@ -446,11 +499,13 @@ private:
     enum class ShadingModel : int {
         Unlit = 0,
         Lambert = 1,
-        Phong = 2
+        Phong = 2,
+        PBR = 3
     };
 
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
+    Texture m_windmillTexture;
     bool m_useMaterial { true };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
@@ -463,6 +518,10 @@ private:
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
     float m_specularShininess { 32.0f };
+    glm::vec3 m_pbrBaseColor { 0.8f, 0.4f, 0.2f };
+    float m_pbrMetallic { 0.0f };
+    float m_pbrRoughness { 0.6f };
+    float m_pbrAo { 1.0f };
     bool m_dayNightEnabled { true };
     bool m_dayNightAutoAdvance { true };
     float m_dayNightCycleDuration { 60.0f };
@@ -1384,15 +1443,22 @@ void Application::renderGui()
     };
 
     ImGui::Begin("Shading & Lighting");
-    static const char* shadingModes[] = { "Unlit", "Lambert", "Phong" };
+    static const char* shadingModes[] = { "Unlit", "Lambert", "Phong", "PBR" };
     int shadingIndex = static_cast<int>(m_shadingModel);
     if (ImGui::Combo("Shading Model", &shadingIndex, shadingModes, IM_ARRAYSIZE(shadingModes)))
         m_shadingModel = static_cast<ShadingModel>(shadingIndex);
     ImGui::Checkbox("Use material if no texture", &m_useMaterial);
-    ImGui::ColorEdit3("Custom diffuse colour", glm::value_ptr(m_customDiffuseColor));
-    ImGui::ColorEdit3("Specular colour", glm::value_ptr(m_specularColor));
-    ImGui::SliderFloat("Specular strength", &m_specularStrength, 0.0f, 5.0f);
-    ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
+    if (m_shadingModel == ShadingModel::PBR) {
+        ImGui::ColorEdit3("PBR base colour", glm::value_ptr(m_pbrBaseColor));
+        ImGui::SliderFloat("PBR metallic", &m_pbrMetallic, 0.0f, 1.0f);
+        ImGui::SliderFloat("PBR roughness", &m_pbrRoughness, 0.04f, 1.0f);
+        ImGui::SliderFloat("PBR ambient occlusion", &m_pbrAo, 0.0f, 1.0f);
+    } else {
+        ImGui::ColorEdit3("Custom diffuse colour", glm::value_ptr(m_customDiffuseColor));
+        ImGui::ColorEdit3("Specular colour", glm::value_ptr(m_specularColor));
+        ImGui::SliderFloat("Specular strength", &m_specularStrength, 0.0f, 5.0f);
+        ImGui::SliderFloat("Specular shininess", &m_specularShininess, 1.0f, 256.0f);
+    }
 
     ImGui::Separator();
     ImGui::Text("Day / Night Cycle");

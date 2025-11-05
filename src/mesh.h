@@ -5,6 +5,7 @@
 #include <framework/shader.h>
 DISABLE_WARNINGS_PUSH()
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 DISABLE_WARNINGS_POP()
 
 #include <exception>
@@ -19,10 +20,9 @@ struct MeshLoadingException : public std::runtime_error {
 struct GPUMaterial {
     GPUMaterial(const Material& material);
 
-    alignas(16) glm::vec3 kd{ 1.0f };
-	alignas(16) glm::vec3 ks{ 0.0f };
-	float shininess{ 1.0f };
-	float transparency{ 1.0f };
+    alignas(16) glm::vec4 kdMetallic{ 1.0f, 1.0f, 1.0f, 0.0f };
+	alignas(16) glm::vec4 ksRoughness{ 0.0f, 0.0f, 0.0f, 0.5f };
+	alignas(16) glm::vec4 miscParams{ 1.0f, 1.0f, 1.0f, 0.0f };
 };
 
 class GPUMesh {

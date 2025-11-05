@@ -3,14 +3,14 @@
 DISABLE_WARNINGS_PUSH()
 #include <fmt/format.h>
 DISABLE_WARNINGS_POP()
+#include <algorithm>
 #include <iostream>
 #include <vector>
 
 GPUMaterial::GPUMaterial(const Material& material) :
-    kd(material.kd),
-    ks(material.ks),
-    shininess(material.shininess),
-    transparency(material.transparency)
+    kdMetallic(glm::vec4(material.kd, material.metallic)),
+    ksRoughness(glm::vec4(material.ks, material.roughness)),
+    miscParams(glm::vec4(material.shininess, material.transparency, material.ambientOcclusion, 0.0f))
 {}
 
 GPUMesh::GPUMesh(const Mesh& cpuMesh)
@@ -22,7 +22,9 @@ GPUMesh::GPUMesh(const Mesh& cpuMesh)
     glBufferData(GL_UNIFORM_BUFFER, sizeof(GPUMaterial), &gpuMaterial, GL_STATIC_READ);
 
     // Figure out if this mesh has texture coordinates
-    m_hasTextureCoords = static_cast<bool>(cpuMesh.material.kdTexture);
+    m_hasTextureCoords = std::any_of(cpuMesh.vertices.begin(), cpuMesh.vertices.end(), [](const Vertex& v) {
+        return v.texCoord != glm::vec2(0.0f);
+    });
 
     // Create VAO and bind it so subsequent creations of VBO and IBO are bound to this VAO
     glGenVertexArrays(1, &m_vao);
