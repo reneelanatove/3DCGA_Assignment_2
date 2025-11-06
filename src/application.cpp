@@ -1,4 +1,4 @@
-//#include "Image.h"
+#include <framework/image.h>
 #include "mesh.h"
 #include "texture.h"
 // Always include window first (because it includes glfw, which includes GL which needs to be included AFTER glew).
@@ -235,6 +235,7 @@ public:
         }
 
         initializeShadowTexture();
+        initializeEnvTexture();
         initializeViews();
         initializeLightGeometry();
         initializeWindArrowGeometry();
@@ -252,6 +253,12 @@ public:
 
     ~Application()
     {
+        if (m_envTexture != 0)
+            glDeleteTextures(1, &m_envTexture);
+        if (m_envVbo != 0)
+            glDeleteBuffers(1, &m_envVbo);
+        if (m_envVao != 0)
+            glDeleteVertexArrays(1, &m_envVao);
         if (m_lightVbo != 0)
             glDeleteBuffers(1, &m_lightVbo);
         if (m_lightVao != 0)
@@ -440,6 +447,18 @@ public:
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
 
+                const bool enableEnvMap = m_useEnvMap && m_envTexture != 0;
+                const float envStrength = enableEnvMap ? std::clamp(m_envMapStrength, 0.0f, 1.0f) : 0.0f;
+                glUniform1i(m_defaultShader.getUniformLocation("useEnvMap"), enableEnvMap ? GL_TRUE : GL_FALSE);
+                glUniform1f(m_defaultShader.getUniformLocation("envMapStrength"), envStrength);
+                glUniform1i(m_defaultShader.getUniformLocation("environmentMap"), 3);
+                glActiveTexture(GL_TEXTURE3);
+                if (enableEnvMap)
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+                else
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+                glActiveTexture(GL_TEXTURE0);
+
 
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
@@ -563,13 +582,14 @@ private:
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     Texture m_normalMap;
-    GLuint m_envTexture;
+    GLuint m_envTexture { 0 };
     GLuint m_envVao { 0 };
     GLuint m_envVbo { 0 };
 
     bool m_useMaterial { true };
 	bool m_useNormalMap{ false };
     bool m_useEnvMap { false };
+    float m_envMapStrength { 0.5f };
     bool m_shadows{ false };
     bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
@@ -751,12 +771,12 @@ void Application::initializeEnvTexture() {       // Initialize env map textures
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
 
     const std::vector<std::string> faces = {
-        RESOURCE_ROOT "resources/universe_skybox/right.jpg",
-        RESOURCE_ROOT "resources/universe_skybox/left.jpg",
-        RESOURCE_ROOT "resources/universe_skybox/top.jpg",
-        RESOURCE_ROOT "resources/universe_skybox/bottom.jpg",
-        RESOURCE_ROOT "resources/universe_skybox/front.jpg",
-        RESOURCE_ROOT "resources/universe_skybox/back.jpg"
+        RESOURCE_ROOT "resources/universe_skybox/right.png",
+        RESOURCE_ROOT "resources/universe_skybox/left.png",
+        RESOURCE_ROOT "resources/universe_skybox/top.png",
+        RESOURCE_ROOT "resources/universe_skybox/bottom.png",
+        RESOURCE_ROOT "resources/universe_skybox/front.png",
+        RESOURCE_ROOT "resources/universe_skybox/back.png"
     };
 
     for (size_t i = 0; i < faces.size(); i++) {
@@ -765,7 +785,14 @@ void Application::initializeEnvTexture() {       // Initialize env map textures
             std::cerr << "Failed to load texture: " << faces[i] << std::endl;
             continue;
         }
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, img.width, img.height, 0, GL_RGB, GL_UNSIGNED_BYTE, img.get_data());
+        GLenum format = GL_RGB;
+        if (img.channels == 4)
+            format = GL_RGBA;
+        else if (img.channels != 3)
+            std::cerr << "Unexpected channel count (" << img.channels << ") for env map face " << faces[i] << std::endl;
+
+        const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(i);
+        glTexImage2D(target, 0, static_cast<GLint>(format), img.width, img.height, 0, format, GL_UNSIGNED_BYTE, img.get_data());
     }
 
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -1993,6 +2020,8 @@ void Application::renderGui()
 		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
 		ImGui::Checkbox("Show Normal Map", &m_useNormalMap);
         ImGui::Checkbox("Use Environment Map", &m_useEnvMap);
+        if (m_useEnvMap)
+            ImGui::SliderFloat("Environment Mix", &m_envMapStrength, 0.0f, 1.0f);
 
 		ImGui::Separator();
         ImGui::Text("Material Textures");

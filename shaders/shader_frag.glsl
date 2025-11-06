@@ -38,6 +38,9 @@ uniform bool pcf;
 
 uniform bool useNormalMap;
 uniform sampler2D normalMap;
+uniform samplerCube environmentMap;
+uniform bool useEnvMap;
+uniform float envMapStrength;
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -162,6 +165,13 @@ void main()
     }
 
     finalColor = finalColor * shadowValue;
+
+    if (useEnvMap && envMapStrength > 0.0) {
+        vec3 reflectedDir = reflect(-viewDir, normal);
+        vec3 envColor = texture(environmentMap, reflectedDir).rgb;
+        float mixFactor = clamp(envMapStrength, 0.0, 1.0);
+        finalColor = mix(finalColor, envColor, mixFactor);
+    }
 
     fragColor = vec4(finalColor, 1);
 }
