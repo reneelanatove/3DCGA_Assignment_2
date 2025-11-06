@@ -431,6 +431,13 @@ public:
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
 
+                glUniform1i(m_defaultShader.getUniformLocation("useEnvMap"), m_useEnvMap);
+                if (m_useEnvMap) {
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+                    glUniform1i(m_defaultShader.getUniformLocation("skybox"), 2);
+                }
+
 
                 uploadLightsToShader();
                 mesh.draw(m_defaultShader);
@@ -2070,9 +2077,9 @@ void Application::uploadShadowMapsToShader()
 
         lightMVPs[i] = lightProj * lightView;
 
-        glActiveTexture(GL_TEXTURE2 + i);
+        glActiveTexture(GL_TEXTURE3 + i);
         glBindTexture(GL_TEXTURE_2D, m_shadowMaps[i].textureId);
-        shadowMapUnits[i] = 2 + i;
+        shadowMapUnits[i] = 3 + i;
     }
 
     glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), m_maxLights, GL_FALSE, glm::value_ptr(lightMVPs[0]));

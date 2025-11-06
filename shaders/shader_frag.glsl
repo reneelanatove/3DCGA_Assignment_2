@@ -39,6 +39,9 @@ uniform bool pcf;
 uniform bool useNormalMap;
 uniform sampler2D normalMap;
 
+uniform bool useEnvMap;
+uniform samplerCube skybox;
+
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec2 fragTexCoord;
@@ -160,6 +163,11 @@ void main()
         finalColor += specColor * specAccum;
     }
     
+    if (useEnvMap) {
+        vec3 reflectDir = reflect(-viewDir, normal);
+        vec3 envColor = texture(skybox, reflectDir).rgb;
+        finalColor = envColor;
+    }
 
     fragColor = vec4(finalColor, 1);
 }
