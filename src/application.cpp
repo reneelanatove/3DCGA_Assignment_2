@@ -315,7 +315,6 @@ public:
                 const glm::mat4 localMvp = lightMVP * modelMatrix;
                 glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
 
-                // Execute draw command
                 mesh.draw(m_shadowShader);
                     
             };
@@ -341,8 +340,6 @@ public:
                     drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, i);
                 }
             }
-
-            // Shadow pass rendering
             
 
             // Unbind the off-screen framebuffer
@@ -357,7 +354,6 @@ public:
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // ...
             glEnable(GL_DEPTH_TEST);
 
             if (!m_views.empty()) {
@@ -449,7 +445,7 @@ public:
 
             
 
-            // Main pass rendering
+            // === Main pass rendering ===
             for (GPUMesh& mesh : m_meshes) {
                 drawMeshWithModel(mesh, m_modelMatrix, true);
             }
