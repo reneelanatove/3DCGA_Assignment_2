@@ -1,4 +1,4 @@
-//#include "Image.h"
+#include <framework/image.h>
 #include "mesh.h"
 #include "texture.h"
 // Always include window first (because it includes glfw, which includes GL which needs to be included AFTER glew).
