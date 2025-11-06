@@ -32,8 +32,8 @@ uniform float lightSpotCosCutoff[MAX_LIGHTS];
 uniform float lightSpotSoftness[MAX_LIGHTS];
 
 uniform bool shadowsEnabled;
-uniform mat4 lightMVP;
-uniform sampler2D shadowMap;
+uniform mat4 lightMVP[MAX_LIGHTS];
+uniform sampler2D shadowMap[MAX_LIGHTS];
 uniform bool pcf;
 
 uniform bool useNormalMap;
@@ -44,6 +44,43 @@ in vec3 fragNormal;
 in vec2 fragTexCoord;
 
 layout(location = 0) out vec4 fragColor;
+
+float calculateVisibility(int i) {
+    float shadowValue = 1.0;
+    vec4 lightSpacePos = lightMVP[i] * vec4(fragPosition, 1.0);
+    lightSpacePos /= lightSpacePos.w;
+    lightSpacePos = lightSpacePos * 0.5 + 0.5;
+
+    float closestDepth = texture(shadowMap[i], lightSpacePos.xy).r;
+    float currentDepth = lightSpacePos.z;
+    float bias = 0.001;
+
+    if (currentDepth - bias > closestDepth) {
+        shadowValue *= 0.0;
+    }
+
+    if (pcf) {
+        float pixelSize = 1.0 / 1024.0; 
+        shadowValue = 0.0;
+
+        for (int x = -1; x <= 1; ++x) {
+            for (int y = -1; y <= 1; ++y) {
+                vec2 offset = vec2(x, y) * pixelSize;
+
+                float closestDepth = texture(shadowMap[i], lightSpacePos.xy + offset).r;
+
+                if (currentDepth - bias > closestDepth)
+                    shadowValue += 0.0;
+                else
+                    shadowValue += 1.0;
+            }
+        }
+
+        shadowValue /= 9.0;
+
+    }
+    return shadowValue;
+}
 
 void main()
 {
@@ -99,7 +136,9 @@ void main()
         }
 
         vec3 lightContribution = lightColors[i] * spotFactor;
-        colorAccum += baseColor * diff * lightContribution;
+
+        float visibility = shadowsEnabled ? calculateVisibility(i) : 1.0;
+        colorAccum += visibility * baseColor * diff * lightContribution;
 
         if (shadingMode == 2 && diff > 0.0) {
             vec3 reflectDir = reflect(-lightDir, normal);
@@ -120,48 +159,7 @@ void main()
 
         finalColor += specColor * specAccum;
     }
-
-    float shadowValue = 1.0;
-    if (shadowsEnabled) {
-        vec4 lightSpacePos = lightMVP * vec4(fragPosition, 1.0);
-        lightSpacePos /= lightSpacePos.w;
-        lightSpacePos = lightSpacePos * 0.5 + 0.5;
-
-        float closestDepth = texture(shadowMap, lightSpacePos.xy).r;
-        float currentDepth = lightSpacePos.z;
-        float bias = 0.001;
-
-        shadowValue = currentDepth - bias > closestDepth ? 0.0 : 1.0;
-    }
-
-    if (pcf) {
-        float pixelSize = 1.0 / 1024.0; 
-
-        vec4 lightSpacePos = lightMVP * vec4(fragPosition, 1.0);
-        lightSpacePos /= lightSpacePos.w;
-        lightSpacePos = lightSpacePos * 0.5 + 0.5; 
-
-        float fragLightDepth = lightSpacePos.z;
-        float bias = 0.001;
-        shadowValue = 0.0;
-
-        for (int i = -1; i <= 1; ++i) {
-            for (int j = -1; j <= 1; ++j) {
-                vec2 offset = vec2(i, j) * pixelSize;
-
-                float closestDepth = texture(shadowMap, lightSpacePos.xy + offset).r;
-
-                if (fragLightDepth - bias > closestDepth)
-                    shadowValue += 0.0;
-                else
-                    shadowValue += 1.0;
-            }
-        }
-
-        shadowValue /= 9.0; 
-    }
-
-    finalColor = finalColor * shadowValue;
+    
 
     fragColor = vec4(finalColor, 1);
 }
