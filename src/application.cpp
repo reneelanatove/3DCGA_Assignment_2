@@ -1,4 +1,4 @@
-//#include "Image.h"
+#include <framework/image.h>
 #include "mesh.h"
 #include "texture.h"
 // Always include window first (because it includes glfw, which includes GL which needs to be included AFTER glew).
@@ -241,7 +241,8 @@ class Application {
 public:
     Application()
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
-        , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
+        , m_texture(RESOURCE_ROOT "resources/rock_face_03_diffuse.png")
+        , m_normalMap(RESOURCE_ROOT "resources/rock_face_03_normal_map.png")
         , m_windmillTexture(RESOURCE_ROOT "resources/rusty_metal_sheet_4k/textures/rusty_metal_sheet_diff_4k.jpg")
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
@@ -250,7 +251,7 @@ public:
             else if (action == GLFW_RELEASE)
                 onKeyReleased(key, mods);
         });
-        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
+        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/plane.obj");
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -259,8 +260,13 @@ public:
 
             ShaderBuilder shadowBuilder;
             shadowBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shadow_vert.glsl");
-            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
+            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
+
+            ShaderBuilder envBuilder;
+            envBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/env_vert.glsl");
+            envBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/env_frag.glsl");
+            m_envShader = envBuilder.build();
 
             ShaderBuilder lightBuilder;
             lightBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/light_marker_vert.glsl");
@@ -276,6 +282,8 @@ public:
             std::cerr << e.what() << std::endl;
         }
 
+        initializeShadowTexture();
+        initializeEnvTexture();
         initializeViews();
         initializeLightGeometry();
         initializeWindArrowGeometry();
@@ -293,6 +301,12 @@ public:
 
     ~Application()
     {
+        if (m_envTexture != 0)
+            glDeleteTextures(1, &m_envTexture);
+        if (m_envVbo != 0)
+            glDeleteBuffers(1, &m_envVbo);
+        if (m_envVao != 0)
+            glDeleteVertexArrays(1, &m_envVao);
         if (m_lightVbo != 0)
             glDeleteBuffers(1, &m_lightVbo);
         if (m_lightVao != 0)
@@ -340,8 +354,65 @@ public:
             }
 
             renderGui();
+
+            // === Shadow Pass ===
+            glEnable(GL_DEPTH_TEST);
+
+            glm::mat4 lightProj;
+            if (m_lights[0].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
+            else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+
+            glm::mat4 lightView = glm::lookAt(m_lights[0].position, m_lights[0].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+
+            glm::mat4 lightMVP = lightProj * lightView;
+
+            // Bind the off-screen framebuffer
+            glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+
+            // Clear the shadow map and set needed options
+            glClearDepth(1.0);
+            glClear(GL_DEPTH_BUFFER_BIT);
+
+            // Function for shadow pass of a mesh with a given model matrix
+            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
+                const glm::mat4 localMvp = lightMVP * modelMatrix;
+                // Bind the shader
+                m_shadowShader.bind();
+                // Set viewport size
+                const int SHADOWTEX_WIDTH = 1024;
+                const int SHADOWTEX_HEIGHT = 1024;
+                glViewport(0, 0, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT);
+
+                // .... HERE YOU MUST ADD THE CORRECT UNIFORMS FOR RENDERING THE SHADOW MAP
+                glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
+
+                // Execute draw command
+                mesh.draw(m_shadowShader);
+            };
+
+            // Shadow pass rendering
+            for (GPUMesh& mesh : m_meshes) {
+                drawMeshForShadow(mesh, m_modelMatrix);
+            }
+
+            if (m_windmillBodyMesh) {
+                drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f));
+            }
+
+            if (m_windmillRotorMesh) {
+                glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
+                rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
+            }
+
+
+            // Unbind the off-screen framebuffer
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
             if (m_windmillDirty)
                 rebuildWindmillMesh();
+			// === Main Render Pass ===
+			glViewport(0, 0, m_window.getFrameBufferSize().x, m_window.getFrameBufferSize().y);
 
             // Clear the screen
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
@@ -359,53 +430,107 @@ public:
             m_viewMatrix = camera.viewMatrix();
             m_projectionMatrix = camera.projectionMatrix();
 
-            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, Texture* albedoTexture) {
+            if (m_useEnvMap) {
+                glDepthFunc(GL_LEQUAL);
+                glDepthMask(GL_FALSE);
+
+                m_envShader.bind();
+
+                glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(m_viewMatrix));
+                glm::mat4 vp = m_projectionMatrix * viewNoTranslation;
+
+                glUniformMatrix4fv(m_envShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(vp));
+
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+                glUniform1i(m_envShader.getUniformLocation("skybox"), 0);
+
+                glBindVertexArray(m_envVao);
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+
+                glDepthMask(GL_TRUE);
+                glDepthFunc(GL_LESS);
+            }
+
+            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, bool useTexture) {
                 const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
                 const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
 
+
+
+                mesh.setMaterial(m_gpuMaterial);
                 m_defaultShader.bind();
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(localMvp));
                 glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
-                const bool useTexture = (albedoTexture != nullptr) && mesh.hasTextureCoords();
+
                 if (useTexture) {
-                    albedoTexture->bind(GL_TEXTURE0);
+                    // Bind diffuse texture
+                    m_texture.bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
+
+                    // Bind normal map texture
+                    m_normalMap.bind(GL_TEXTURE2);
+                    glUniform1i(m_defaultShader.getUniformLocation("normalMap"), 2);
+                    glUniform1i(m_defaultShader.getUniformLocation("useNormalMap"), m_useNormalMap);
+
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 } else {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, m_texShadow);
+                glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
+				glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
+				glUniform1i(m_defaultShader.getUniformLocation("pcf"), m_pcf);
+				glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), 1, GL_FALSE, glm::value_ptr(lightMVP));
+               
                 glUniform1i(m_defaultShader.getUniformLocation("shadingMode"), static_cast<int>(m_shadingModel));
                 glUniform3fv(m_defaultShader.getUniformLocation("customDiffuseColor"), 1, glm::value_ptr(m_customDiffuseColor));
                 glUniform3fv(m_defaultShader.getUniformLocation("viewPosition"), 1, glm::value_ptr(camera.position()));
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
-                glUniform3fv(m_defaultShader.getUniformLocation("pbrBaseColor"), 1, glm::value_ptr(m_pbrBaseColor));
-                glUniform1f(m_defaultShader.getUniformLocation("pbrMetallic"), std::clamp(m_pbrMetallic, 0.0f, 1.0f));
-                glUniform1f(m_defaultShader.getUniformLocation("pbrRoughness"), std::clamp(m_pbrRoughness, 0.04f, 1.0f));
-                glUniform1f(m_defaultShader.getUniformLocation("pbrAo"), std::clamp(m_pbrAo, 0.0f, 1.0f));
+
+                const bool enableEnvMap = m_useEnvMap && m_envTexture != 0;
+                const float envStrength = enableEnvMap ? std::clamp(m_envMapStrength, 0.0f, 1.0f) : 0.0f;
+                glUniform1i(m_defaultShader.getUniformLocation("useEnvMap"), enableEnvMap ? GL_TRUE : GL_FALSE);
+                glUniform1f(m_defaultShader.getUniformLocation("envMapStrength"), envStrength);
+                glUniform1i(m_defaultShader.getUniformLocation("environmentMap"), 3);
+                glActiveTexture(GL_TEXTURE3);
+                if (enableEnvMap)
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+                else
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+                glActiveTexture(GL_TEXTURE0);
+
+
+                uploadLightsToShader();
+                mesh.draw(m_defaultShader);
                 glUniform3fv(m_defaultShader.getUniformLocation("ambientLight"), 1, glm::value_ptr(m_currentAmbientColor));
                 glUniform3fv(m_defaultShader.getUniformLocation("sunDirection"), 1, glm::value_ptr(m_currentSunDirection));
                 glUniform3fv(m_defaultShader.getUniformLocation("sunColor"), 1, glm::value_ptr(m_currentSunColor));
                 glUniform1f(m_defaultShader.getUniformLocation("sunIntensity"), m_currentSunIntensity);
-                uploadLightsToShader();
-                mesh.draw(m_defaultShader);
             };
 
-            for (GPUMesh& mesh : m_meshes)
-                drawMeshWithModel(mesh, m_modelMatrix, &m_texture);
+            
 
-            if (m_windmillBodyMesh)
-                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), &m_windmillTexture);
+            // Main pass rendering
+            for (GPUMesh& mesh : m_meshes) {
+                drawMeshWithModel(mesh, m_modelMatrix, true);
+            }
+
+            if (m_windmillBodyMesh) {
+                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), false);
+            }
 
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
                 rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, &m_windmillTexture);
+                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, false);
             }
 
             // Processes input and swaps the window buffer
@@ -461,7 +586,7 @@ private:
     // Shader for default rendering and for depth rendering
     Shader m_defaultShader;
     Shader m_shadowShader;
-
+    Shader m_envShader;
     Shader m_lightShader;
 
     struct Light {
@@ -505,8 +630,18 @@ private:
 
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
+    Texture m_normalMap;
+    GLuint m_envTexture { 0 };
+    GLuint m_envVao { 0 };
+    GLuint m_envVbo { 0 };
+
     Texture m_windmillTexture;
     bool m_useMaterial { true };
+	bool m_useNormalMap{ false };
+    bool m_useEnvMap { false };
+    float m_envMapStrength { 0.5f };
+    bool m_shadows{ false };
+    bool m_pcf{ false };
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
     std::optional<GPUMesh> m_windmillBodyMesh;
@@ -517,6 +652,7 @@ private:
     glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
+    float m_specularShininess { 0.0f };
     float m_specularShininess { 32.0f };
     glm::vec3 m_pbrBaseColor { 0.8f, 0.4f, 0.2f };
     float m_pbrMetallic { 0.0f };
@@ -562,6 +698,14 @@ private:
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
 
+    Material m_gpuMaterial {
+        glm::vec3(0.8f, 0.8f, 0.8f),    // kd
+        glm::vec3(0.5f, 0.5f, 0.5f),    // ks
+        32.0f,                          // shininess
+        1.0f,                           // transparency
+        nullptr                         // kdTexture
+    };
+
     struct Viewpoint {
         std::string name;
         glm::vec3 lookAt { 0.0f };
@@ -576,6 +720,8 @@ private:
     std::unique_ptr<Trackball> m_trackball;
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
+	GLuint m_texShadow { 0 };
+    GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
     std::vector<BezierSegment> m_lightPathSegments;
@@ -607,6 +753,8 @@ private:
 
     void initializeViews();
     Trackball& activeTrackball();
+    void initializeShadowTexture();
+    void initializeEnvTexture();
     void resetActiveView();
     void storeActiveViewState();
     void initializeLightGeometry();
@@ -671,6 +819,128 @@ Trackball& Application::activeTrackball()
         m_activeViewIndex = m_views.size() - 1;
 
     return *m_trackball;
+}
+
+void Application::initializeEnvTexture() {       // Initialize env map textures
+    glGenTextures(1, &m_envTexture);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
+
+    const std::vector<std::string> faces = {
+        RESOURCE_ROOT "resources/universe_skybox/right.png",
+        RESOURCE_ROOT "resources/universe_skybox/left.png",
+        RESOURCE_ROOT "resources/universe_skybox/top.png",
+        RESOURCE_ROOT "resources/universe_skybox/bottom.png",
+        RESOURCE_ROOT "resources/universe_skybox/front.png",
+        RESOURCE_ROOT "resources/universe_skybox/back.png"
+    };
+
+    for (size_t i = 0; i < faces.size(); i++) {
+        Image img(faces[i]);
+        if (!img.get_data()) {
+            std::cerr << "Failed to load texture: " << faces[i] << std::endl;
+            continue;
+        }
+        GLenum format = GL_RGB;
+        if (img.channels == 4)
+            format = GL_RGBA;
+        else if (img.channels != 3)
+            std::cerr << "Unexpected channel count (" << img.channels << ") for env map face " << faces[i] << std::endl;
+
+        const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(i);
+        glTexImage2D(target, 0, static_cast<GLint>(format), img.width, img.height, 0, format, GL_UNSIGNED_BYTE, img.get_data());
+    }
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    // --- Create a cube VAO/VBO for the skybox ---
+    float skyboxVertices[] = {
+        // positions          
+        -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        -1.0f,  1.0f, -1.0f,
+        1.0f,  1.0f, -1.0f,
+        1.0f,  1.0f,  1.0f,
+        1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+        1.0f, -1.0f, -1.0f,
+        1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+        1.0f, -1.0f,  1.0f
+    };
+
+    glGenVertexArrays(1, &m_envVao);
+    glGenBuffers(1, &m_envVbo);
+    glBindVertexArray(m_envVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_envVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+}
+
+void Application::initializeShadowTexture() {
+
+    // === Create Shadow Texture ===
+    glGenTextures(1, &m_texShadow);
+
+    const int SHADOWTEX_WIDTH = 1024;
+    const int SHADOWTEX_HEIGHT = 1024;
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, m_texShadow);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+    // Set behaviour for when texture coordinates are outside the [0, 1] range.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Set interpolation for texture sampling (GL_NEAREST for no interpolation).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // === Create framebuffer for extra texture ===
+    glGenFramebuffers(1, &m_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texShadow, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Application::resetActiveView()
@@ -1805,6 +2075,22 @@ void Application::renderGui()
         }
         ImGui::SliderFloat("Spot Cos Cutoff", &selectedLight.spotCosCutoff, 0.0f, 1.0f);
         ImGui::SliderFloat("Spot Softness", &selectedLight.spotSoftness, 0.0f, 1.0f);
+
+		ImGui::Separator();
+        ImGui::Text("Shadows");
+        ImGui::Checkbox("Shadows", &m_shadows);
+		ImGui::Checkbox("Soft Shadows (PCF)", &m_pcf);
+		ImGui::Checkbox("Show Normal Map", &m_useNormalMap);
+        ImGui::Checkbox("Use Environment Map", &m_useEnvMap);
+        if (m_useEnvMap)
+            ImGui::SliderFloat("Environment Mix", &m_envMapStrength, 0.0f, 1.0f);
+
+		ImGui::Separator();
+        ImGui::Text("Material Textures");
+        ImGui::Checkbox("Use Material", &m_useMaterial);
+        ImGui::ColorEdit3("Kd", glm::value_ptr(m_gpuMaterial.kd));
+        ImGui::ColorEdit3("Ks", glm::value_ptr(m_gpuMaterial.ks));
+        ImGui::SliderFloat("Shininess", &m_gpuMaterial.shininess, 1.0f, 256.0f);
     }
 
     ImGui::End();

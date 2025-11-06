@@ -1,10 +1,10 @@
 #version 410
 
-uniform mat4 mvpMatrix;
+uniform mat4 mvp;
 
-layout(location = 0) in vec3 position;
+layout(location = 0) in vec3 pos;
 
 void main()
 {
-    gl_Position = mvpMatrix * vec4(position, 1);
+    gl_Position = mvp * vec4(pos, 1);
 }

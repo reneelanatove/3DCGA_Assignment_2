@@ -46,6 +46,8 @@ public:
     // Bind VAO and call glDrawElements.
     void draw(const Shader& drawingShader);
 
+    void setMaterial(const Material& material);
+
 private:
     void moveInto(GPUMesh&&);
     void freeGpuMemory();

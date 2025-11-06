@@ -101,6 +101,13 @@ void GPUMesh::draw(const Shader& drawingShader)
     glDrawElements(GL_TRIANGLES, m_numIndices, GL_UNSIGNED_INT, nullptr);
 }
 
+void GPUMesh::setMaterial(const Material& material)
+{
+    GPUMaterial gpuMaterial(material);
+    glBindBuffer(GL_UNIFORM_BUFFER, m_uboMaterial);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(GPUMaterial), &gpuMaterial);
+}
+
 void GPUMesh::moveInto(GPUMesh&& other)
 {
     freeGpuMemory();
