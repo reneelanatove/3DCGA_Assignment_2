@@ -303,47 +303,47 @@ public:
             // === Shadow Pass ===
             glEnable(GL_DEPTH_TEST);
             m_shadowShader.bind();
-            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
-                for (int i = 0; i < std::min(static_cast<int>(m_lights.size()), m_maxLights); i++) {
-                    glm::mat4 lightProj;
-                    if (m_lights[i].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
-                    else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, int i) {
+                glm::mat4 lightProj;
+                if (m_lights[i].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
+                else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
 
-                    glm::mat4 lightView = glm::lookAt(m_lights[i].position, m_lights[i].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+                glm::mat4 lightView = glm::lookAt(m_lights[i].position, m_lights[i].direction, glm::vec3(0.0f, 1.0f, 0.0f));
 
-                    glm::mat4 lightMVP = lightProj * lightView;
+                glm::mat4 lightMVP = lightProj * lightView;
 
-                    // Bind this light’s framebuffer
-                    glBindFramebuffer(GL_FRAMEBUFFER, m_shadowMaps[i].framebufferId);
-                    glViewport(0, 0, 1024, 1024);
-                    glClearDepth(1.0);
-                    glClear(GL_DEPTH_BUFFER_BIT);
+                const glm::mat4 localMvp = lightMVP * modelMatrix;
+                glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
+
+                // Execute draw command
+                mesh.draw(m_shadowShader);
                     
-                    
-                    const glm::mat4 localMvp = lightMVP * modelMatrix;
-                    glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
-
-                    // Execute draw command
-                    mesh.draw(m_shadowShader);
-                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                }
             };
 
+            for (int i = 0; i < std::min(static_cast<int>(m_lights.size()), m_maxLights); i++) {
+                // Bind this light’s framebuffer
+                glBindFramebuffer(GL_FRAMEBUFFER, m_shadowMaps[i].framebufferId);
+                glViewport(0, 0, 1024, 1024);
+                glClearDepth(1.0);
+                glClear(GL_DEPTH_BUFFER_BIT);
+
+                for (GPUMesh& mesh : m_meshes) {
+                    drawMeshForShadow(mesh, m_modelMatrix, i);
+                }
+
+                if (m_windmillBodyMesh) {
+                    drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f), i);
+                }
+
+                if (m_windmillRotorMesh) {
+                    glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
+                    rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                    drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, i);
+                }
+            }
+
             // Shadow pass rendering
-            for (GPUMesh& mesh : m_meshes) {
-                drawMeshForShadow(mesh, m_modelMatrix);
-            }
-
-            if (m_windmillBodyMesh) {
-                drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f));
-            }
-
-            if (m_windmillRotorMesh) {
-                glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
-                rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
-            }
-
+            
 
             // Unbind the off-screen framebuffer
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
