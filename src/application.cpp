@@ -37,15 +37,16 @@ DISABLE_WARNINGS_POP()
 namespace {
 
 struct WindmillParameters {
+    //these simply define some dimensions for our windmill to make it look semi realistic
     glm::vec3 baseSize { 2.5f, 1.0f, 2.5f };
-    glm::vec3 towerSize { 0.7f, 3.2f, 0.7f };
-    glm::vec3 hubSize { 0.55f, 0.55f, 0.55f };
+    glm::vec3 towerSize { 0.7f, 3.0f, 0.7f };
+    glm::vec3 hubSize { 0.5f, 0.5f, 0.5f };
     float hubForwardOffset { 0.4f };
     float hubVerticalOffset { 0.0f };
-    float armLength { 2.7f };
-    float armWidth { 0.35f };
-    float armThickness { 0.12f };
-    glm::vec3 structureColor { 0.88f, 0.88f, 0.86f };
+    float armLength { 2.75f };
+    float armWidth { 0.3f };
+    float armThickness { 0.1f };
+    glm::vec3 structureColor { 0.9f, 0.9f, 0.9f };
     float rotationSpeedDegPerSec { 45.0f };
 };
 
@@ -56,10 +57,12 @@ struct WindmillMeshes {
 
 Mesh createBoxMesh(const glm::vec3& size)
 {
+    //create box mesh at origin, 4 times 6 faces = 24 vertices we need to reserve for
     Mesh mesh;
     mesh.vertices.reserve(24);
     mesh.triangles.reserve(12);
 
+    //avoid division by zero
     const glm::vec3 half = size * 0.5f;
     const auto safeDiv = [](float numerator, float denom) -> float {
         return denom > 1e-6f ? numerator / denom : 0.0f;
@@ -109,7 +112,7 @@ Mesh createBoxMesh(const glm::vec3& size)
         glm::vec3(half.x, half.y, half.z),
         glm::vec3(-half.x, half.y, half.z)
     };
-
+// normal directions for the faces
     const std::array<glm::vec3, 6> normals = {
         glm::vec3(0.0f, 0.0f, 1.0f),   // Front
         glm::vec3(0.0f, 0.0f, -1.0f),  // Back
@@ -127,7 +130,7 @@ Mesh createBoxMesh(const glm::vec3& size)
         { 3, 7, 6, 2 }, // Top
         { 0, 1, 5, 4 }  // Bottom
     }};
-
+// build faces, add vertices of the faces
     for (std::size_t face = 0; face < faceIndices.size(); ++face) {
         const glm::vec3 normal = normals[face];
         const auto& indices = faceIndices[face];
@@ -142,10 +145,11 @@ Mesh createBoxMesh(const glm::vec3& size)
         mesh.triangles.emplace_back(glm::uvec3(baseIndex + 0, baseIndex + 1, baseIndex + 2));
         mesh.triangles.emplace_back(glm::uvec3(baseIndex + 0, baseIndex + 2, baseIndex + 3));
     }
+    // add some default settings for the meshes' properties
 
     mesh.material.kd = glm::vec3(0.8f);
     mesh.material.ks = glm::vec3(0.2f);
-    mesh.material.shininess = 32.0f;
+    mesh.material.shininess = 30.0f;
     mesh.material.metallic = 0.0f;
     mesh.material.roughness = 0.6f;
     mesh.material.ambientOcclusion = 1.0f;
@@ -155,6 +159,7 @@ Mesh createBoxMesh(const glm::vec3& size)
 
 void appendTransformedMesh(Mesh& destination, const Mesh& source, const glm::mat4& transform)
 {
+    //this whole function is to add a copy of src to dst, apply transformations for tower, rotor instead of making a bunch of seperate ones and stitching them together
     const std::size_t vertexOffset = destination.vertices.size();
     const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
     const unsigned int indexOffset = static_cast<unsigned int>(vertexOffset);
@@ -174,7 +179,7 @@ void appendTransformedMesh(Mesh& destination, const Mesh& source, const glm::mat
             transformedVertex.normal = vertex.normal;
         destination.vertices.push_back(transformedVertex);
     }
-
+    // here we append the triangle indices (shifted by vertex offset)
     for (const glm::uvec3& triangle : source.triangles) {
         destination.triangles.emplace_back(glm::uvec3(
             indexOffset + triangle.x,
@@ -185,12 +190,14 @@ void appendTransformedMesh(Mesh& destination, const Mesh& source, const glm::mat
 
 glm::vec3 computeHubPosition(const WindmillParameters& params)
 {
+    // this calcs the pos of the hub based on params 
     const float towerBaseY = params.baseSize.y;
     return glm::vec3(0.0f, towerBaseY + params.towerSize.y + params.hubVerticalOffset, params.hubForwardOffset);
 }
 
 WindmillMeshes buildWindmillMeshes(const WindmillParameters& params)
 {
+    // using the previous function we define a base, tower, hub and arms. then we define some materials 
     WindmillMeshes result;
     result.body.vertices.reserve(24 * 4);
     result.body.triangles.reserve(12 * 4);
@@ -221,14 +228,14 @@ WindmillMeshes buildWindmillMeshes(const WindmillParameters& params)
 
     result.body.material.kd = params.structureColor;
     result.body.material.ks = glm::vec3(0.2f);
-    result.body.material.shininess = 32.0f;
+    result.body.material.shininess = 30.0f;
     result.body.material.metallic = 1.0f;
     result.body.material.roughness = 0.75f;
     result.body.material.ambientOcclusion = 1.0f;
 
     result.rotor.material.kd = params.structureColor;
     result.rotor.material.ks = glm::vec3(0.2f);
-    result.rotor.material.shininess = 32.0f;
+    result.rotor.material.shininess = 30.0f;
     result.rotor.material.metallic = 1.0f;
     result.rotor.material.roughness = 0.75f;
     result.rotor.material.ambientOcclusion = 1.0f;
@@ -244,7 +251,7 @@ public:
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
         , m_texture(RESOURCE_ROOT "resources/rock_face_03_diffuse.png")
         , m_normalMap(RESOURCE_ROOT "resources/rock_face_03_normal_map.png")
-        , m_windmillTexture(RESOURCE_ROOT "resources/rusty_metal_sheet_4k/textures/rusty_metal_sheet_diff_4k.jpg")
+        , m_windmillTexture(RESOURCE_ROOT "resources/rusty_metal_sheet_4k/textures/rusty_metal_sheet_diff_4k.jpg") // for PBR
     {
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
@@ -252,7 +259,7 @@ public:
             else if (action == GLFW_RELEASE)
                 onKeyReleased(key, mods);
         });
-        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/plane.obj");
+        m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/plane.obj"); // for normal mapping
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -339,10 +346,13 @@ public:
 
             updateDayNightCycle(deltaTime);
             updateWindGusts(deltaTime);
+            
             Trackball& camera = activeTrackball();
             updateCameraPath(deltaTime, camera);
             updateLightPath(deltaTime);
+            
             updateWindParticles(deltaTime);
+
             const float rotationSpeedRad = glm::radians(m_windmillParams.rotationSpeedDegPerSec * m_windStrength);
             if (rotationSpeedRad != 0.0f) {
                 m_windmillRotationAngle += rotationSpeedRad * deltaTime;
@@ -584,7 +594,7 @@ private:
     Shader m_shadowShader;
     Shader m_envShader;
     Shader m_lightShader;
-
+// box to show light
     struct Light {
         glm::vec3 position { 0.0f, 0.0f, 3.0f };
         glm::vec3 color { 1.0f };
@@ -596,7 +606,8 @@ private:
         bool hasTexture { false };
         GLuint textureId { 0 };
     };
-
+// particles for wind 
+// TODO give them textures
     struct Particle {
         glm::vec3 position { 0.0f };
         glm::vec3 velocity { 0.0f };
@@ -638,6 +649,7 @@ private:
     float m_envMapStrength { 0.5f };
     bool m_shadows{ false };
     bool m_pcf{ false };
+    
     ShadingModel m_shadingModel { ShadingModel::Lambert };
     WindmillParameters m_windmillParams;
     std::optional<GPUMesh> m_windmillBodyMesh;
@@ -645,14 +657,17 @@ private:
     bool m_windmillDirty { true };
     glm::vec3 m_windmillHubPosition { 0.0f };
     float m_windmillRotationAngle { 0.0f };
+
     glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
     float m_specularShininess { 32.0f };
+    
     glm::vec3 m_pbrBaseColor { 0.8f, 0.4f, 0.2f };
     float m_pbrMetallic { 0.0f };
     float m_pbrRoughness { 0.6f };
     float m_pbrAo { 1.0f };
+    
     bool m_dayNightEnabled { true };
     bool m_dayNightAutoAdvance { true };
     float m_dayNightCycleDuration { 60.0f };
@@ -665,6 +680,7 @@ private:
     glm::vec3 m_currentSunDirection { 0.0f, -1.0f, 0.2f };
     glm::vec3 m_currentSunColor { 0.9f, 0.85f, 0.8f };
     float m_currentSunIntensity { 1.0f };
+    
     float m_windDirectionAngleDeg { 0.0f };
     glm::vec3 m_windDirection { 0.0f, 0.0f, 1.0f };
     bool m_windGustsEnabled { true };
@@ -675,6 +691,7 @@ private:
     float m_windSecondaryFrequency { 0.05f };
     float m_windTime { 0.0f };
     glm::mat4 m_windmillOrientation { 1.0f };
+    
     GLuint m_windArrowVao { 0 };
     GLuint m_windArrowVbo { 0 };
     GLsizei m_windArrowVertexCount { 0 };
@@ -683,12 +700,14 @@ private:
     GLuint m_windParticleVao { 0 };
     GLuint m_windParticleVbo { 0 };
     GLsizei m_windParticleCount { 0 };
-    float m_windParticleSpawnRate { 45.0f };
-    float m_windParticleLifetime { 3.5f };
+    float m_windParticleSpawnRate { 50.0f };
+    float m_windParticleLifetime { 3.0f };
     float m_windParticleSize { 8.0f };
     float m_particleSpawnAccumulator { 0.0f };
     size_t m_maxWindParticles { 400 };
-    std::mt19937 m_rng { 1337u };
+    // random number generator from standard library 
+    // 36 because oskars favourite number :)
+    std::mt19937 m_rng { 36u };
     std::uniform_real_distribution<float> m_uniform01 { 0.0f, 1.0f };
 
     std::vector<Light> m_lights;
@@ -702,6 +721,7 @@ private:
     };
     std::vector<ShadowMap> m_shadowMaps;
 
+// type me
     Material m_gpuMaterial {
         glm::vec3(0.8f, 0.8f, 0.8f),    // kd
         glm::vec3(0.5f, 0.5f, 0.5f),    // ks
@@ -725,12 +745,14 @@ private:
     std::vector<Viewpoint> m_views;
     size_t m_activeViewIndex { 0 };
     std::unique_ptr<Trackball> m_trackball;
+
     GLuint m_lightVao { 0 };
     GLuint m_lightVbo { 0 };
 	GLuint m_texShadow { 0 };
     GLuint m_framebuffer{ 0 };
     GLsizei m_lightVertexCount { 0 };
     float m_lightMarkerScale { 0.1f };
+    
     std::vector<BezierSegment> m_lightPathSegments;
     std::vector<PathSample> m_lightPathSamples;
     float m_lightPathTotalLength { 0.0f };
