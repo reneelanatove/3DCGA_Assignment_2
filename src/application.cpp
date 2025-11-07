@@ -1,4 +1,5 @@
 #include <framework/image.h>
+#include <framework/image.h>
 #include "mesh.h"
 #include "texture.h"
 // Always include window first (because it includes glfw, which includes GL which needs to be included AFTER glew).
@@ -309,54 +310,45 @@ public:
 
             // === Shadow Pass ===
             glEnable(GL_DEPTH_TEST);
+            m_shadowShader.bind();
+            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, int i) {
+                glm::mat4 lightProj;
+                if (m_lights[i].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
+                else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
 
-            glm::mat4 lightProj;
-            if (m_lights[0].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
-            else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+                glm::mat4 lightView = glm::lookAt(m_lights[i].position, m_lights[i].direction, glm::vec3(0.0f, 1.0f, 0.0f));
 
-            glm::mat4 lightView = glm::lookAt(m_lights[0].position, m_lights[0].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+                glm::mat4 lightMVP = lightProj * lightView;
 
-            glm::mat4 lightMVP = lightProj * lightView;
-
-            // Bind the off-screen framebuffer
-            glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
-
-            // Clear the shadow map and set needed options
-            glClearDepth(1.0);
-            glClear(GL_DEPTH_BUFFER_BIT);
-
-            // Function for shadow pass of a mesh with a given model matrix
-            auto drawMeshForShadow = [&](GPUMesh& mesh, const glm::mat4& modelMatrix) {
                 const glm::mat4 localMvp = lightMVP * modelMatrix;
-                // Bind the shader
-                m_shadowShader.bind();
-                // Set viewport size
-                const int SHADOWTEX_WIDTH = 1024;
-                const int SHADOWTEX_HEIGHT = 1024;
-                glViewport(0, 0, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT);
-
-                // .... HERE YOU MUST ADD THE CORRECT UNIFORMS FOR RENDERING THE SHADOW MAP
                 glUniformMatrix4fv(m_shadowShader.getUniformLocation("mvp"), 1, GL_FALSE, glm::value_ptr(localMvp));
 
-                // Execute draw command
                 mesh.draw(m_shadowShader);
+                    
             };
 
-            // Shadow pass rendering
-            for (GPUMesh& mesh : m_meshes) {
-                drawMeshForShadow(mesh, m_modelMatrix);
-            }
+            for (int i = 0; i < std::min(static_cast<int>(m_lights.size()), m_maxLights); i++) {
+                // Bind this light’s framebuffer
+                glBindFramebuffer(GL_FRAMEBUFFER, m_shadowMaps[i].framebufferId);
+                glViewport(0, 0, 1024, 1024);
+                glClearDepth(1.0);
+                glClear(GL_DEPTH_BUFFER_BIT);
 
-            if (m_windmillBodyMesh) {
-                drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f));
-            }
+                for (GPUMesh& mesh : m_meshes) {
+                    drawMeshForShadow(mesh, m_modelMatrix, i);
+                }
 
-            if (m_windmillRotorMesh) {
-                glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
-                rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel);
-            }
+                if (m_windmillBodyMesh) {
+                    drawMeshForShadow(*m_windmillBodyMesh, glm::mat4(1.0f), i);
+                }
 
+                if (m_windmillRotorMesh) {
+                    glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
+                    rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                    drawMeshForShadow(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, i);
+                }
+            }
+            
 
             // Unbind the off-screen framebuffer
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -370,7 +362,6 @@ public:
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // ...
             glEnable(GL_DEPTH_TEST);
 
             if (!m_views.empty()) {
@@ -393,9 +384,9 @@ public:
 
                 glUniformMatrix4fv(m_envShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(vp));
 
-                glActiveTexture(GL_TEXTURE0);
+                glActiveTexture(GL_TEXTURE3);
                 glBindTexture(GL_TEXTURE_CUBE_MAP, m_envTexture);
-                glUniform1i(m_envShader.getUniformLocation("skybox"), 0);
+                glUniform1i(m_envShader.getUniformLocation("skybox"), 3);
 
                 glBindVertexArray(m_envVao);
                 glDrawArrays(GL_TRIANGLES, 0, 36);
@@ -423,8 +414,8 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
 
                     // Bind normal map texture
-                    m_normalMap.bind(GL_TEXTURE2);
-                    glUniform1i(m_defaultShader.getUniformLocation("normalMap"), 2);
+                    m_normalMap.bind(GL_TEXTURE1);
+                    glUniform1i(m_defaultShader.getUniformLocation("normalMap"), 1);
                     glUniform1i(m_defaultShader.getUniformLocation("useNormalMap"), m_useNormalMap);
 
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
@@ -433,12 +424,9 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
-                glActiveTexture(GL_TEXTURE1);
-                glBindTexture(GL_TEXTURE_2D, m_texShadow);
-                glUniform1i(m_defaultShader.getUniformLocation("shadowMap"), 1);
-				glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
-				glUniform1i(m_defaultShader.getUniformLocation("pcf"), m_pcf);
-				glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), 1, GL_FALSE, glm::value_ptr(lightMVP));
+                
+
+                uploadShadowMapsToShader();
                
                 glUniform1i(m_defaultShader.getUniformLocation("shadingMode"), static_cast<int>(m_shadingModel));
                 glUniform3fv(m_defaultShader.getUniformLocation("customDiffuseColor"), 1, glm::value_ptr(m_customDiffuseColor));
@@ -470,7 +458,7 @@ public:
 
             
 
-            // Main pass rendering
+            // === Main pass rendering ===
             for (GPUMesh& mesh : m_meshes) {
                 drawMeshWithModel(mesh, m_modelMatrix, true);
             }
@@ -640,8 +628,17 @@ private:
     size_t m_maxWindParticles { 400 };
     std::mt19937 m_rng { 1337u };
     std::uniform_real_distribution<float> m_uniform01 { 0.0f, 1.0f };
+
     std::vector<Light> m_lights;
     size_t m_selectedLightIndex { 0 };
+    int m_maxLights { 8 };
+
+    struct ShadowMap {
+        GLuint textureId { 0 };
+        GLuint framebufferId { 0 };
+        glm::mat4 lightMVP { 1.0f };
+    };
+    std::vector<ShadowMap> m_shadowMaps;
 
     Material m_gpuMaterial {
         glm::vec3(0.8f, 0.8f, 0.8f),    // kd
@@ -721,6 +718,7 @@ private:
     void selectPreviousLight();
     void renderGui();
     void uploadLightsToShader();
+    void uploadShadowMapsToShader();
     void rebuildWindmillMesh();
     void sanitizeWindmillParams();
     void updateDayNightCycle(float deltaTime);
@@ -801,7 +799,6 @@ void Application::initializeEnvTexture() {       // Initialize env map textures
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-    // --- Create a cube VAO/VBO for the skybox ---
     float skyboxVertices[] = {
         // positions          
         -1.0f,  1.0f, -1.0f,
@@ -847,44 +844,47 @@ void Application::initializeEnvTexture() {       // Initialize env map textures
         1.0f, -1.0f,  1.0f
     };
 
-    glGenVertexArrays(1, &m_envVao);
     glGenBuffers(1, &m_envVbo);
-    glBindVertexArray(m_envVao);
     glBindBuffer(GL_ARRAY_BUFFER, m_envVbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, 3 * 36 * sizeof(float), &skyboxVertices, GL_STATIC_DRAW);
+
+    glGenVertexArrays(1, &m_envVao);
+    glBindVertexArray(m_envVao);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, m_envVbo);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
 }
 
 void Application::initializeShadowTexture() {
 
-    // === Create Shadow Texture ===
-    glGenTextures(1, &m_texShadow);
+    m_shadowMaps.resize(m_maxLights);
 
     const int SHADOWTEX_WIDTH = 1024;
     const int SHADOWTEX_HEIGHT = 1024;
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_texShadow);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 
-    // Set behaviour for when texture coordinates are outside the [0, 1] range.
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    for (int i = 0; i < m_maxLights; ++i) {
+        // Create Shadow Texture
+        glGenTextures(1, &m_shadowMaps[i].textureId);
+        glBindTexture(GL_TEXTURE_2D, m_shadowMaps[i].textureId);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, SHADOWTEX_WIDTH, SHADOWTEX_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 
-    // Set interpolation for texture sampling (GL_NEAREST for no interpolation).
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        // Set behaviour for when texture coordinates are outside the [0, 1] range.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+        // Set interpolation for texture sampling (GL_NEAREST for no interpolation).
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    // === Create framebuffer for extra texture ===
-    glGenFramebuffers(1, &m_framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texShadow, 0);
-    glDrawBuffer(GL_NONE);
-    glReadBuffer(GL_NONE);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
+        // Create framebuffer for extra texture
+        glGenFramebuffers(1, &m_shadowMaps[i].framebufferId);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowMaps[i].framebufferId);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_shadowMaps[i].textureId, 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -2072,6 +2072,38 @@ void Application::rebuildWindmillMesh()
     m_windmillBodyMesh.emplace(cpuMeshes.body);
     m_windmillRotorMesh.emplace(cpuMeshes.rotor);
     m_windmillDirty = false;
+}
+
+void Application::uploadShadowMapsToShader()
+{
+    glUniform1i(m_defaultShader.getUniformLocation("shadowsEnabled"), m_shadows);
+    glUniform1i(m_defaultShader.getUniformLocation("pcf"), m_pcf);
+
+    constexpr int m_maxLights = 8;
+
+    std::array<glm::mat4, m_maxLights> lightMVPs {};
+    std::array<int, m_maxLights> shadowMapUnits {};
+
+    for (int i = 0; i < m_lights.size(); ++i) {
+        glm::mat4 lightProj;
+        if (m_lights[i].isSpotlight) lightProj = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 100.0f);
+        else lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+
+        glm::mat4 lightView = glm::lookAt(m_lights[i].position, m_lights[i].direction, glm::vec3(0.0f, 1.0f, 0.0f));
+
+        glm::mat4 lightMVP = lightProj * lightView;
+
+
+        lightMVPs[i] = lightProj * lightView;
+
+        glActiveTexture(GL_TEXTURE3 + i);
+        glBindTexture(GL_TEXTURE_2D, m_shadowMaps[i].textureId);
+        shadowMapUnits[i] = 3 + i;
+    }
+
+    glUniformMatrix4fv(m_defaultShader.getUniformLocation("lightMVP"), m_maxLights, GL_FALSE, glm::value_ptr(lightMVPs[0]));
+    glUniform1iv(m_defaultShader.getUniformLocation("shadowMap"), m_maxLights, shadowMapUnits.data());
+
 }
 
 void Application::uploadLightsToShader()
