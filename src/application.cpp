@@ -452,7 +452,7 @@ public:
                 glDepthFunc(GL_LESS);
             }
 
-            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, bool useTexture) {
+            auto drawMeshWithModel = [&](GPUMesh& mesh, const glm::mat4& modelMatrix, bool useTexture, Texture* diffuseOverride, bool enableEnv) {
                 const glm::mat4 localMvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
                 // Normals need the inverse transpose to handle non-uniform scaling correctly.
                 const glm::mat3 localNormal = glm::inverseTranspose(glm::mat3(modelMatrix));
@@ -466,8 +466,9 @@ public:
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(localNormal));
 
                 if (useTexture) {
+                    Texture* diffuseTexture = diffuseOverride ? diffuseOverride : &m_texture;
                     // Bind diffuse texture
-                    m_texture.bind(GL_TEXTURE0);
+                    diffuseTexture->bind(GL_TEXTURE0);
                     glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
 
                     // Bind normal map texture
@@ -494,8 +495,15 @@ public:
                 glUniform3fv(m_defaultShader.getUniformLocation("specularColor"), 1, glm::value_ptr(m_specularColor));
                 glUniform1f(m_defaultShader.getUniformLocation("specularStrength"), m_specularStrength);
                 glUniform1f(m_defaultShader.getUniformLocation("specularShininess"), m_specularShininess);
+                const float pbrMetallic = std::clamp(m_pbrMetallic, 0.0f, 1.0f);
+                const float pbrRoughness = std::clamp(m_pbrRoughness, 0.04f, 1.0f);
+                const float pbrAo = std::clamp(m_pbrAo, 0.0f, 1.0f);
+                glUniform3fv(m_defaultShader.getUniformLocation("pbrBaseColor"), 1, glm::value_ptr(m_pbrBaseColor));
+                glUniform1f(m_defaultShader.getUniformLocation("pbrMetallic"), pbrMetallic);
+                glUniform1f(m_defaultShader.getUniformLocation("pbrRoughness"), pbrRoughness);
+                glUniform1f(m_defaultShader.getUniformLocation("pbrAo"), pbrAo);
 
-                const bool enableEnvMap = m_useEnvMap && m_envTexture != 0;
+                const bool enableEnvMap = enableEnv && m_useEnvMap && m_envTexture != 0;
                 const float envStrength = enableEnvMap ? std::clamp(m_envMapStrength, 0.0f, 1.0f) : 0.0f;
                 glUniform1i(m_defaultShader.getUniformLocation("useEnvMap"), enableEnvMap ? GL_TRUE : GL_FALSE);
                 glUniform1f(m_defaultShader.getUniformLocation("envMapStrength"), envStrength);
@@ -517,20 +525,20 @@ public:
             };
 
             
-
+    
             // Main pass rendering
             for (GPUMesh& mesh : m_meshes) {
-                drawMeshWithModel(mesh, m_modelMatrix, true);
+                drawMeshWithModel(mesh, m_modelMatrix, true, nullptr, true);
             }
 
             if (m_windmillBodyMesh) {
-                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), false);
+                drawMeshWithModel(*m_windmillBodyMesh, glm::mat4(1.0f), true, &m_windmillTexture, false);
             }
 
             if (m_windmillRotorMesh) {
                 glm::mat4 rotorModel = glm::translate(glm::mat4(1.0f), m_windmillHubPosition);
                 rotorModel = rotorModel * glm::rotate(glm::mat4(1.0f), m_windmillRotationAngle, glm::vec3(0.0f, 0.0f, 1.0f));
-                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, false);
+                drawMeshWithModel(*m_windmillRotorMesh, m_windmillOrientation * rotorModel, true, &m_windmillTexture, false);
             }
 
             // Processes input and swaps the window buffer
@@ -652,7 +660,6 @@ private:
     glm::vec3 m_customDiffuseColor { 0.8f, 0.4f, 0.2f };
     glm::vec3 m_specularColor { 1.0f, 1.0f, 1.0f };
     float m_specularStrength { 1.0f };
-    float m_specularShininess { 0.0f };
     float m_specularShininess { 32.0f };
     glm::vec3 m_pbrBaseColor { 0.8f, 0.4f, 0.2f };
     float m_pbrMetallic { 0.0f };
@@ -703,7 +710,10 @@ private:
         glm::vec3(0.5f, 0.5f, 0.5f),    // ks
         32.0f,                          // shininess
         1.0f,                           // transparency
-        nullptr                         // kdTexture
+        0.0f,                           // metallic
+        0.5f,                           // roughness
+        1.0f,                           // ambient occlusion
+        std::shared_ptr<Image>{}        // kdTexture
     };
 
     struct Viewpoint {
